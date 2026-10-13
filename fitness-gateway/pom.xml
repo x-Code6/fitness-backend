@@ -28,6 +28,15 @@
             <groupId>com.alibaba.cloud</groupId>
             <artifactId>spring-cloud-starter-alibaba-nacos-discovery</artifactId>
         </dependency>
+        <!-- 令牌白名单校验：网关是 WebFlux，必须用响应式客户端。
+             在事件循环线程里调阻塞的 StringRedisTemplate 会占住 Netty 的 I/O 线程，
+             并发一高整个网关就卡死，所以这里引 -reactive 版本而不是普通版。
+             Redis 连接工厂由 RedisAutoConfiguration 提供，ReactiveStringRedisTemplate
+             由 RedisReactiveAutoConfiguration 基于它装配。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis-reactive</artifactId>
+        </dependency>
         <!-- 复用 common 里的 JwtUtil / ErrorCode -->
         <dependency>
             <groupId>com.yuedong</groupId>

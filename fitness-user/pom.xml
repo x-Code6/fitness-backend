@@ -49,6 +49,14 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-amqp</artifactId>
         </dependency>
+        <!-- Redis：登录令牌白名单（jti 写入与吊销）。
+             架构设计 §2 早就把 Redis 列为 user 服务的依赖，但此前 pom 里并没有引入，
+             因为当时 user 服务没有任何地方用 Redis（文档里说的"手机验证码"从未实现）。
+             v2 的"禁用用户立即生效"必须有它。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
         <dependency>
             <groupId>com.yuedong</groupId>
             <artifactId>fitness-common</artifactId>

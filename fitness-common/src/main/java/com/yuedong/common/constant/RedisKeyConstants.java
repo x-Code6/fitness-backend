@@ -118,6 +118,49 @@ public final class RedisKeyConstants {
         return FEED_INBOX + userId;
     }
 
+    // ==================== 登录态（user 签发 / gateway 校验，跨服务共享） ====================
+
+    /**
+     * 登录令牌白名单，String：key=login:token:{jti}，value=userId。
+     *
+     * <p>为什么需要它：JWT 本身无状态，一旦签发，在过期前谁都拦不住——"禁用某个用户"
+     * "踢下线""改密后强制重新登录"这三件事做不到。加这一层后，网关每次验签通过还要再问一次
+     * Redis "这个 jti 还在白名单里吗"，不在就直接 401。</p>
+     *
+     * <p>代价（要能说清）：等于把无状态的 JWT 用回了有状态的 session，每个请求多一次
+     * Redis O(1) 查询；换来的是<b>可撤销性</b>。TTL 与 token 有效期对齐，
+     * 所以不需要清理任务——过期即自动消失。</p>
+     *
+     * <p>★用 jti 而不是整个 token 当 key：token 有 200+ 字符，直接做 key 既浪费内存，
+     * 也无法按用户反查（要禁用一个人时不知道该删哪些 key，见 LOGIN_USER）。</p>
+     */
+    public static final String LOGIN_TOKEN = "login:token:";
+
+    /** 某用户当前所有在线 jti，Set。禁用/踢下线时按这个集合批量删 login:token:* */
+    public static final String LOGIN_USER = "login:user:";
+
+    /** 管理端登录令牌白名单，与用户端 key 空间分开（两套密钥、两套生命周期） */
+    public static final String ADMIN_LOGIN_TOKEN = "admin:login:token:";
+
+    /** 管理端某管理员当前所有在线 jti，Set */
+    public static final String ADMIN_LOGIN_USER = "admin:login:user:";
+
+    public static String loginToken(String jti) {
+        return LOGIN_TOKEN + jti;
+    }
+
+    public static String loginUser(Long userId) {
+        return LOGIN_USER + userId;
+    }
+
+    public static String adminLoginToken(String jti) {
+        return ADMIN_LOGIN_TOKEN + jti;
+    }
+
+    public static String adminLoginUser(Long adminId) {
+        return ADMIN_LOGIN_USER + adminId;
+    }
+
     // ==================== 幂等/验证码（order / admin-server） ====================
 
     /** MQ 消费幂等，SETNX + TTL */

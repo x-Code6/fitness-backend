@@ -59,7 +59,12 @@ public interface UserService {
     /**
      * 管理端：禁用/启用会员。
      *
-     * @param status 0=正常 1=禁用
+     * <p>★语义以 {@code t_user.status} 与 User 实体为准：<b>1=正常，0=禁用</b>。
+     * 这里的注释以前写反过（写成 0=正常 1=禁用），而 status 是 0/1 这种"看起来都合理"的
+     * 数字编码，注释写反时调用方会照反的传，表现就是"点禁用变成启用"——
+     * 所以数字状态码的注释必须和 DDL 的 COMMENT 一字不差。</p>
+     *
+     * @param status 1=正常 0=禁用；传 0 时实现里会同步吊销该用户的全部登录令牌
      */
     void adminSetStatus(Long id, Integer status);
 }
