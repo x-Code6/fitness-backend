@@ -1,0 +1,167 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  悦动健身 · 后端父工程（聚合模块 + 统一依赖管理）
+
+  模块划分：
+  ├── fitness-common    公共模块（统一响应/异常/JWT工具/用户上下文）
+  ├── fitness-gateway   网关（路由 + JWT 全局校验 + 用户上下文透传）
+  ├── fitness-user      用户服务（注册/登录/资料）——P0
+  ├── fitness-course    课程服务（课程/缓存/门店GEO/视频/秒杀活动）——P0
+  ├── fitness-order     订单服务（预约/秒杀/模拟支付/延迟取消）——P0
+  ├── fitness-point     积分服务（打卡/积分/排行榜）——P0
+  ├── fitness-behavior  埋点服务（Kafka 行为流/热门课程）——P0
+  └── fitness-community 社区服务（P1 再实现）
+
+  版本组合（官方兼容矩阵）：Boot 3.3.x + Spring Cloud 2023.0.x + Spring Cloud Alibaba 2023.0.3.x
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.yuedong</groupId>
+    <artifactId>fitness-backend</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+    <name>fitness-backend</name>
+
+    <!-- 子模块：4 个 api 模块放各自业务服务前面，保证构建顺序正确 -->
+    <modules>
+        <module>fitness-common</module>
+        <module>fitness-user-api</module>
+        <module>fitness-course-api</module>
+        <module>fitness-order-api</module>
+        <module>fitness-point-api</module>
+        <module>fitness-gateway</module>
+        <module>fitness-user</module>
+        <module>fitness-course</module>
+        <module>fitness-order</module>
+        <module>fitness-point</module>
+        <module>fitness-behavior</module>
+        <module>fitness-community</module>
+        <module>fitness-admin-server</module>
+    </modules>
+
+    <properties>
+        <java.version>17</java.version>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+        <!-- 版本统一在这里管理，子模块引用时不写版本号 -->
+        <spring-boot.version>3.3.12</spring-boot.version>
+        <spring-cloud.version>2023.0.3</spring-cloud.version>
+        <spring-cloud-alibaba.version>2023.0.3.3</spring-cloud-alibaba.version>
+        <mybatis-plus.version>3.5.7</mybatis-plus.version>
+        <jjwt.version>0.12.6</jjwt.version>
+        <lombok.version>1.18.34</lombok.version>
+    </properties>
+
+    <!-- 依赖版本仲裁：只锁版本，不真正引入依赖 -->
+    <dependencyManagement>
+        <dependencies>
+            <!-- Spring Boot 官方 BOM：管理 spring-* 全家桶版本 -->
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-dependencies</artifactId>
+                <version>${spring-boot.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <!-- Spring Cloud（Gateway/OpenFeign/LoadBalancer） -->
+            <dependency>
+                <groupId>org.springframework.cloud</groupId>
+                <artifactId>spring-cloud-dependencies</artifactId>
+                <version>${spring-cloud.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <!-- Spring Cloud Alibaba（Nacos） -->
+            <dependency>
+                <groupId>com.alibaba.cloud</groupId>
+                <artifactId>spring-cloud-alibaba-dependencies</artifactId>
+                <version>${spring-cloud-alibaba.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <!-- MyBatis-Plus（Boot3 专用 starter） -->
+            <dependency>
+                <groupId>com.baomidou</groupId>
+                <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
+                <version>${mybatis-plus.version}</version>
+            </dependency>
+            <!-- JJWT 三件套 -->
+            <dependency>
+                <groupId>io.jsonwebtoken</groupId>
+                <artifactId>jjwt-api</artifactId>
+                <version>${jjwt.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.jsonwebtoken</groupId>
+                <artifactId>jjwt-impl</artifactId>
+                <version>${jjwt.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.jsonwebtoken</groupId>
+                <artifactId>jjwt-jackson</artifactId>
+                <version>${jjwt.version}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <!-- 所有子模块都会继承的公共依赖 -->
+    <dependencies>
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <scope>provided</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <!-- 编译插件：显式声明 Lombok 注解处理器（JDK 21+ 下更稳妥），
+                     并用 release=17 编译（本机 JDK 21 可编译 17 字节码，VM 上用 17/21 运行均可） -->
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-compiler-plugin</artifactId>
+                    <version>3.13.0</version>
+                    <configuration>
+                        <release>17</release>
+                        <annotationProcessorPaths>
+                            <path>
+                                <groupId>org.projectlombok</groupId>
+                                <artifactId>lombok</artifactId>
+                                <version>${lombok.version}</version>
+                            </path>
+                        </annotationProcessorPaths>
+                    </configuration>
+                </plugin>
+                <!-- Spring Boot 打包插件：声明 repackage 绑定后，package 阶段产出可执行 fat-jar
+                     （含 BOOT-INF/lib 全部依赖），这是 Docker 部署的前提 -->
+                <plugin>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-maven-plugin</artifactId>
+                    <version>${spring-boot.version}</version>
+                    <executions>
+                        <execution>
+                            <goals>
+                                <goal>repackage</goal>
+                            </goals>
+                        </execution>
+                    </executions>
+                    <configuration>
+                        <!-- lombok 由外层 provided 继承，打包时剔除 -->
+                        <excludes>
+                            <exclude>
+                                <groupId>org.projectlombok</groupId>
+                                <artifactId>lombok</artifactId>
+                            </exclude>
+                        </excludes>
+                    </configuration>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+    </build>
+</project>

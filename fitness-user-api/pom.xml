@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  用户服务 API 模块：对外（服务间）Feign 契约 + 跨服务 DTO。
+  消费方按需引入并 @EnableFeignClients(basePackages = "com.yuedong.user.api")；
+  fitness-user 自身依赖本模块，保证 provider 与 client 的接口签名/DTO 单一来源。
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>com.yuedong</groupId>
+        <artifactId>fitness-backend</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>fitness-user-api</artifactId>
+    <name>fitness-user-api</name>
+
+    <dependencies>
+        <!-- 统一响应信封 Result / PageDTO -->
+        <dependency>
+            <groupId>com.yuedong</groupId>
+            <artifactId>fitness-common</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!-- Feign 注解（仅注解，不引服务器实现） -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-openfeign</artifactId>
+        </dependency>
+        <!-- web 映射注解 @GetMapping/@PostMapping -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-web</artifactId>
+        </dependency>
+        <!-- 请求体校验注解 -->
+        <dependency>
+            <groupId>jakarta.validation</groupId>
+            <artifactId>jakarta.validation-api</artifactId>
+        </dependency>
+        <!-- DTO 时间字段的序列化格式注解 -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-annotations</artifactId>
+        </dependency>
+    </dependencies>
+</project>

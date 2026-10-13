@@ -1,0 +1,170 @@
+# ========================
+# 构建输出
+# ========================
+target/
+*.jar
+*.war
+*.ear
+*.class
+*.nar
+
+# ========================
+# Maven
+# ========================
+.m2/
+mvnw
+mvnw.cmd
+.mvn/wrapper/maven-wrapper.jar
+.mvn/wrapper/maven-wrapper.properties
+
+# ========================
+# Gradle（备用，项目未使用但防误提交）
+# ========================
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# ========================
+# IDE - IntelliJ IDEA
+# ========================
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# ========================
+# IDE - Eclipse
+# ========================
+.project
+.classpath
+.settings/
+*.launch
+.metadata/
+
+# ========================
+# IDE - VS Code
+# ========================
+.vscode/
+*.code-workspace
+
+# ========================
+# IDE - 其他工具缓存
+# ========================
+.mimosa/
+.factorypath
+.springBeans
+.sts4-cache/
+
+# ========================
+# 日志文件
+# ========================
+logs/
+*.log
+log/
+
+# ========================
+# 操作系统生成文件
+# ========================
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msm
+*.msp
+*.lnk
+
+# ========================
+# 敏感/隐私文件（禁止上传）
+# ========================
+
+# 生产环境配置（含真实密码、密钥）
+application-prod.yml
+application-prod.properties
+application-prod.yaml
+application-production.yml
+application-production.properties
+application-production.yaml
+application-release.yml
+application-release.properties
+application-release.yaml
+
+# 环境变量文件
+.env
+.env.*
+!.env.example
+
+# 密钥与证书文件
+*.jks
+*.keystore
+*.truststore
+*.p12
+*.pfx
+*.pem
+*.key
+*.cert
+*.crt
+*.der
+*.pub
+*.rsa
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+*.ssh/
+
+# 加密/安全相关
+*.secret
+*.credentials
+secrets/
+credentials/
+
+# ========================
+# 数据库相关文件
+# ========================
+*.sql.bak
+*.db
+*.sqlite
+*.sqlite3
+*.h2.db
+*.mv.db
+*.trace.db
+
+# ========================
+# 临时/缓存文件
+# ========================
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*~
+*.pid
+*.cache
+
+# ========================
+# 打包/分发文件
+# ========================
+dist/
+node_modules/
+
+# ========================
+# 测试覆盖率报告
+# ========================
+coverage/
+*.lcov
+.nyc_output/
+
+# ========================
+# Docker 本地覆盖文件（只忽略"我这台机器临时改的"，不是项目配置）
+# ========================
+# 注意：不要写 docker-compose.*.yml —— 它会把项目自己的
+# docker/docker-compose.middleware.yml（中间件编排，必须入库）一起吃掉。
+docker-compose.override.yml
+docker-compose.local.yml
+docker-compose.*.local.yml
