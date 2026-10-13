@@ -1,14 +1,19 @@
 package com.yuedong.common.constant;
 
 /**
- * Redis Key 统一管理（与《后端架构设计》§6 的 Key 表一一对应）。
+ * Redis Key 统一管理。
+ *
+ * <p>来源：《后端架构设计》§6 的 Key 表，以及《数据库设计与功能实现说明》第四部分 4.5
+ * （v2 演进设计里新增与变更的 key 以 4.5 为准，落到这里）。</p>
  *
  * <p>设计约定：</p>
  * <ul>
  *   <li>前缀 + 业务 id 组成完整 key，参数化方法保证拼接格式全局一致；</li>
  *   <li>秒杀库存/购买资格的 key 由 course（预热写入）和 order（Lua 扣减）两个服务共同使用，
  *       必须共享同一常量来源，防止改名不同步；</li>
- *   <li>每个常量标注使用方与类型，便于容量评估和排查。</li>
+ *   <li>每个常量标注使用方与类型，便于容量评估和排查；</li>
+ *   <li>★注释只描述代码真正做的事。旧版本这里写过"Lua 扣减""互斥重建锁"之类的契约，
+ *       而当时对应功能并不存在——注释与实现脱节比没有注释更糟。</li>
  * </ul>
  */
 public final class RedisKeyConstants {
@@ -118,11 +123,30 @@ public final class RedisKeyConstants {
     /** MQ 消费幂等，SETNX + TTL */
     public static final String IDEMPOTENT_MSG = "idempotent:msg:";
 
+    /**
+     * 接口防重窗口，SETNX + TTL（默认 5 秒），由 {@code IdempotentAspect} 写入。
+     *
+     * <p>与上面 IDEMPOTENT_MSG 的区别：MSG 防的是 MQ 消息重复投递（消费端职责），
+     * API 防的是用户重复提交（入口职责），两者键空间分开，排查时一眼能分辨来源。</p>
+     */
+    public static final String IDEMPOTENT_API = "idempotent:api:";
+
     /** 管理端图形验证码，String，2 分钟一次一用 */
     public static final String ADMIN_CAPTCHA = "admin:captcha:";
 
     public static String idempotentMsg(String msgId) {
         return IDEMPOTENT_MSG + msgId;
+    }
+
+    /**
+     * 接口防重 key：前缀 + 用户 + 请求路径 三段。
+     *
+     * @param prefix 业务前缀（一般取方法名，保证同接口不同动作互不干扰）
+     * @param userId 当前登录用户，防重必须按用户隔离
+     * @param path   请求路径，如 /coupon/receive
+     */
+    public static String idempotentApi(String prefix, Long userId, String path) {
+        return IDEMPOTENT_API + prefix + ":" + userId + ":" + path;
     }
 
     public static String adminCaptcha(String captchaId) {
