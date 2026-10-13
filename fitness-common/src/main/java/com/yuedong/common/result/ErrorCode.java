@@ -19,6 +19,7 @@ public enum ErrorCode {
     // ---------- 通用 ----------
     SUCCESS(0, "ok"),
     PARAM_ERROR(40000, "请求参数不正确"),
+    REPEAT_SUBMIT(40001, "操作太快了，请稍后再试一次"),
     UNAUTHORIZED(40100, "尚未登录"),
     TOKEN_INVALID(40101, "登录已过期，请重新登录"),
     FORBIDDEN(40300, "无权访问该资源"),
