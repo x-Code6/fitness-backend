@@ -1,4 +1,11 @@
-# 网关配置
+# ============================================================
+# 网关配置（系统唯一对外入口）
+# 本期变更：① 路由补齐（coupon / message 两个已实现但没路由的接口）
+#           ② 社区路由下线（演进设计 D20）
+#           ③ 秒杀列表单独一条路由（它和抢课接口分属两个服务）
+#           ④ 白名单改成真正的 Ant 风格 glob（配合代码里换掉的 AntPathMatcher）
+#           ⑤ 新增 Redis 连接与 token-check-enabled（jti 令牌白名单）
+# ============================================================
 server:
   port: 8080
 
@@ -12,6 +19,9 @@ spring:
         server-addr: ${NACOS_ADDR:127.0.0.1:8848}
     gateway:
       # CORS 统一在网关处理（各服务不再配置，避免重复头）
+      # ⚠️ 待办（核查文档 P2-5）：allowedOriginPatterns:"*" + allowCredentials:true
+      #    组合在浏览器侧等于"任何站点都能带凭证跨域调我"。上线前要换成明确域名列表。
+      #    这里暂时保留 * ，是为了不打断本机 5173/5174 两个前端口的联调。
       globalcors:
         cors-configurations:
           '[/**]':
@@ -20,44 +30,69 @@ spring:
             allowedHeaders: "*"
             allowCredentials: true
       # 路由表：/api/<服务前缀>/** → lb://服务名（StripPrefix=1 去掉 /api 一级）
-      # 服务内部控制器路径保持与前端 Mock 一致（如 /auth/login、/checkin/do）
+      # 服务内部控制器路径保持与前端约定一致（如 /auth/login、/checkin/do）
+      #
+      # ★Spring Cloud Gateway 按"声明顺序"取第一条命中的路由，
+      #   所以更精确的 Predicated 必须写在更通配的那条前面（见 seckill-list）。
       routes:
         - id: user
           uri: lb://fitness-user
           predicates:
-            - Path=/api/auth/**,/api/user/**
+            # message 是站内消息中心，接口在 user 服务里，以前漏了这条路由导致前端 404
+            - Path=/api/auth/**,/api/user/**,/api/message/**
           filters:
             - StripPrefix=1
+
+        # ★秒杀分两家：活动列表要和课程信息一起查，在 course 服务；
+        #   抢课与轮询结果要建订单，在 order 服务。
+        #   以前 /api/seckill/** 整段给了 order，于是 /api/seckill/list 被转发到
+        #   order 服务，而那边没有 /seckill/list → 秒杀专区必然 404。
+        #   这条更精确的路由必须排在 order 那条之前。
+        - id: seckill-list
+          uri: lb://fitness-course
+          predicates:
+            - Path=/api/seckill/list
+          filters:
+            - StripPrefix=1
+
         - id: course
           uri: lb://fitness-course
           predicates:
-            - Path=/api/course/**,/api/video/**,/api/store/**
+            # coupon 优惠券接口也在 course 服务（券模板与库存属于课程域），以前同样漏了路由
+            - Path=/api/course/**,/api/video/**,/api/store/**,/api/coupon/**
           filters:
             - StripPrefix=1
+
         - id: order
           uri: lb://fitness-order
           predicates:
             - Path=/api/booking/**,/api/seckill/**
           filters:
             - StripPrefix=1
+
         - id: point
           uri: lb://fitness-point
           predicates:
             - Path=/api/checkin/**,/api/rank/**,/api/point/**
           filters:
             - StripPrefix=1
+
         - id: behavior
           uri: lb://fitness-behavior
           predicates:
             - Path=/api/behavior/**
           filters:
             - StripPrefix=1
-        - id: community
-          uri: lb://fitness-community
-          predicates:
-            - Path=/api/community/**
-          filters:
-            - StripPrefix=1
+
+        # 社区域本轮下线（演进设计 D20：不建 yd_community、不放路由、前端入口隐藏）。
+        # fitness-community 模块代码与 pom 保留，恢复时把这段注释解开并补建库脚本即可。
+        #        - id: community
+        #          uri: lb://fitness-community
+        #          predicates:
+        #            - Path=/api/community/**
+        #          filters:
+        #            - StripPrefix=1
+
         - id: admin
           uri: lb://fitness-admin-server
           predicates:
@@ -65,28 +100,63 @@ spring:
           filters:
             - StripPrefix=1
 
-# 鉴权配置
+  # Redis：给下面的 jti 令牌白名单校验用。
+  # 网关用的是响应式客户端（ReactiveStringRedisTemplate），连接池与超时都要设，
+  # 否则 Redis 卡住时会把 Netty 事件循环线程拖住——timeout 就是兜这个的。
+  data:
+    redis:
+      host: ${REDIS_ADDR:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASS:}
+      timeout: 2000ms
+      connect-timeout: 2000ms
+
+# ============================================================
+# 鉴权配置（对应 AuthProperties）
+# ============================================================
 auth:
-  # 免登录白名单（前缀匹配）：登录/注册、浏览类只读接口（游客可看）、埋点上报、接口文档
+  # 免登录白名单
+  # ★匹配规则已从"字符串前缀比较"改为 AntPathMatcher，因此：
+  #   - 要放行整个子树必须显式写 /**，写 /api/behavior 现在只代表它自己
+  #   - 以前 /api/admin/** 这种 glob 是配了也不生效的假配置，现在才真正生效
   whitelist:
+    # ---- 登录注册 ----
     - /api/auth/login
     - /api/user/register
-    - /api/user/sms/send        # 后期验证码登录启用
+    # 注：以前这里有一条 /api/user/sms/send，但项目里没有任何控制器实现它
+    # （手机验证码登录从未落地）。留着等于给网关一个永远匹配不上的死配置，删掉。
+
+    # ---- 游客可浏览的只读接口 ----
     - /api/course/list
     - /api/course/detail
     - /api/seckill/list
     - /api/store/nearby
     - /api/video/list
     - /api/video/detail
-    - /api/community/feed        # 社区 Feed 游客可浏览；发布/点赞/评论需登录
-    - /api/behavior              # 埋点允许匿名（服务内用 deviceId 区分）
-    - /api/admin/**              # 管理端自带鉴权（fitness-admin-server 拦截器校验自己的 JWT）
-    - /**/v3/api-docs
+    - /api/behavior/report      # 埋点上报允许匿名（服务内用 deviceId 区分未登录用户）
+    - /api/behavior/hot/courses # 首页热度推荐，游客也要能看
 
-# JWT：与 fitness-user 保持一致（生产放 Nacos 配置中心/环境变量）
+    # ---- 管理端：admin-server 自己有验证码 + JWT，网关这里只放行它的登录链路 ----
+    # 只列这两个，是因为 AuthAdminController 实际只有 /captcha 与 /login 两个方法
+    # （菜单数据在登录响应里一起返回，不是独立接口）。
+    # 不要写"以后可能会有"的路径——白名单里多一条匹配不上的条目，
+    # 就是给未来的自己埋一个"以为放行了其实没放行"的排查坑。
+    - /api/admin/auth/login
+    - /api/admin/auth/captcha
+
+    # ---- 接口文档 ----
+    - /**/v3/api-docs
+    - /**/v3/api-docs/**
+
+  # 是否校验 jti 令牌白名单。true=禁用/吊销立即生效；false=退回纯无状态 JWT（吊销失效）。
+  # 留这个开关只为本机还没起 Redis 时能先联调别的功能，生产与演示必须 true。
+  # ⚠️ 开启后 Redis 是登录链路的强依赖，本项目选择 fail-close：查不到就当未登录。
+  token-check-enabled: ${TOKEN_CHECK:true}
+
+# JWT：与 fitness-user 保持一致（同一个 secret 才能验签通过）
 jwt:
   secret: ${JWT_SECRET:yuedong-fitness-jwt-secret-2026-please-change-me-32bytes}
-  expire-minutes: 43200         # 30 天
+  expire-minutes: 43200         # 30 天。有白名单后这个值只决定"多久要重新登录一次"
 
 logging:
   level:
