@@ -55,6 +55,10 @@ public class User {
     @TableField("created_at")
     private LocalDateTime createdAt;
 
+    /** 最后登录时间：登录成功时由服务端写入，管理端会员列表展示用（v2 新增列） */
+    @TableField("last_login_at")
+    private LocalDateTime lastLoginAt;
+
     /** 更新时间 */
     @TableField("updated_at")
     private LocalDateTime updatedAt;
