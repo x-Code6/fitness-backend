@@ -1,46 +1,67 @@
 package com.yuedong.course.api.dto;
 
-import com.fasterxml.jackson.annotation.JsonFormat;
+import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.List;
 
 /**
- * 管理端优惠券分页行 DTO。
+ * 管理端券列表行（跨服务契约，★必须 @NoArgsConstructor + @AllArgsConstructor）。
+ *
+ * <p>时间这里保留 {@code LocalDateTime} 而不是格式化字符串：
+ * 管理端表格要排序与比较，C 端才需要"几月几号"这种人话。
+ * <b>同一个概念在两个端口用两种类型是可以的，硬统一反而别扭。</b></p>
  */
 @Data
 @Builder
+@NoArgsConstructor
+@AllArgsConstructor
 public class CouponAdminDTO {
 
     private Long id;
 
     private String title;
 
-    /** 使用门槛（元），0=无门槛 */
+    /** SECKILL / NORMAL */
+    private String couponType;
+
     private BigDecimal threshold;
 
-    /** 抵扣面额（元） */
     private BigDecimal discount;
 
     private Integer total;
 
     private Integer remain;
 
-    /** 每人限领张数 */
     private Integer limitPerUser;
 
-    
-    @JsonFormat(pattern = "yyyy-MM-dd HH:mm")
+    private LocalDateTime receiveStartTime;
 
-    private LocalDateTime startTime;
+    private LocalDateTime receiveEndTime;
 
-    
-    @JsonFormat(pattern = "yyyy-MM-dd HH:mm")
+    /** FOREVER / DAYS / RANGE */
+    private String validType;
 
-    private LocalDateTime endTime;
+    private Integer validDays;
 
-    /** 1=进行中 2=已作废 */
+    private LocalDateTime useStartTime;
+
+    private LocalDateTime useEndTime;
+
+    /** 0 全场 / 1 限课程 / 2 限门店 */
+    private Integer scope;
+
+    /** 已配的课程范围（编辑表单回显用） */
+    private List<Long> courseIds;
+
+    /** 已配的门店范围 */
+    private List<Long> storeIds;
+
+    private String description;
+
     private Integer status;
 }

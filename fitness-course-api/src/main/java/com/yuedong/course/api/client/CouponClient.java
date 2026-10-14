@@ -15,11 +15,22 @@ import java.math.BigDecimal;
 @FeignClient(name = "fitness-course")
 public interface CouponClient {
 
-    /** 校验持券可用性（amount = 订单原价） */
+    /**
+     * 校验持券可用性。
+     *
+     * @param amount   该笔订单原价（判门槛）
+     * @param courseId 买的哪门课（判 scope=1），不传则不做课程范围校验
+     * @param storeId  在哪家店买（判 scope=2），不传则不做门店范围校验
+     * <p>★v2 为什么要把 courseId/storeId 传进来：券有了可用范围之后，
+     *   "这张券能不能用"就<b>不再是券自己的属性</b>，而是"券 × 这笔订单"的关系。
+     *   只传金额的话，范围校验根本没有输入可做，一张限高新店的券会被用在大学城店。</p>
+     */
     @GetMapping("/inner/coupon/info")
     Result<CouponUsableDTO> info(@RequestParam("recordId") Long recordId,
                                  @RequestParam("userId") Long userId,
-                                 @RequestParam("amount") BigDecimal amount);
+                                 @RequestParam("amount") BigDecimal amount,
+                                 @RequestParam(value = "courseId", required = false) Long courseId,
+                                 @RequestParam(value = "storeId", required = false) Long storeId);
 
     /** 核销用券（UNUSED → USED，绑定订单号） */
     @PostMapping("/inner/coupon/use")

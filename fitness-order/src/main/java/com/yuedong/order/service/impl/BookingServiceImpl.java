@@ -103,7 +103,10 @@ public class BookingServiceImpl implements BookingService {
         BigDecimal discountAmount = BigDecimal.ZERO;
         String couponTitle = null;
         if (dto.getCouponRecordId() != null) {
-            Result<CouponUsableDTO> couponResult = couponClient.info(dto.getCouponRecordId(), userId, originalAmount);
+            // ★v2 用券校验要带上"买哪门课、在哪家店"：券的可用范围是 券 × 订单 的关系，
+            // 只给金额判不出 scope=1/2，一张限高新店的券就能用在大学城店的订单上
+            Result<CouponUsableDTO> couponResult = couponClient.info(
+                    dto.getCouponRecordId(), userId, originalAmount, dto.getCourseId(), dto.getStoreId());
             CouponUsableDTO coupon = couponResult.getData();
             if (couponResult.getCode() != 0 || coupon == null || !coupon.isUsable()) {
                 // 把券服务给的具体原因带回前端（未达门槛 / 已过期 / 不在适用课程内）。
