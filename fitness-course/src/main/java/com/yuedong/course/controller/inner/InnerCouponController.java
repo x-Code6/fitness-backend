@@ -30,12 +30,14 @@ public class InnerCouponController {
 
     private final CouponService couponService;
 
-    /** 校验持券可用性（amount = 订单原价） */
+    /** 校验持券可用性（v2：要带上买的哪门课、在哪家店，否则范围券没法判） */
     @GetMapping("/info")
     public Result<CouponUsableDTO> info(@RequestParam Long recordId,
                                         @RequestParam Long userId,
-                                        @RequestParam BigDecimal amount) {
-        return Result.ok(couponService.usableInfo(recordId, userId, amount));
+                                        @RequestParam BigDecimal amount,
+                                        @RequestParam(required = false) Long courseId,
+                                        @RequestParam(required = false) Long storeId) {
+        return Result.ok(couponService.usableInfo(recordId, userId, amount, courseId, storeId));
     }
 
     /** 核销用券（UNUSED → USED，绑定订单号） */
