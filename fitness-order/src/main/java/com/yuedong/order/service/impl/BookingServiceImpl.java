@@ -386,11 +386,11 @@ public class BookingServiceImpl implements BookingService {
             actions.add("PAY");
             actions.add("CANCEL");
         } else if (BookingStatus.PAID.equals(booking.getStatus())) {
-            // 凭证摘要："2 张凭证 · 可用 1 张"。★可用张数按"状态+次数+有效期"三条件算，
-            // 与预约页权益条用的是同一套判断（EntitlementService 里那一份），不另写一套
+            // 凭证摘要："2 张凭证 · 可用 1 张"。可用与否的规则在实体上（三处 NULL 判断），
+            // 这里不另写一份，免得和预约创建时的校验漂移
             int usable = 0;
             for (Entitlement entitlement : entitlements) {
-                if (isEntitlementUsable(entitlement, now)) {
+                if (entitlement.usableAt(now)) {
                     usable++;
                 }
             }
@@ -437,22 +437,6 @@ public class BookingServiceImpl implements BookingService {
                 .subTitle(booking.getParentNo() == null ? "" : "购物车合并下单")
                 .actions(actions)
                 .build();
-    }
-
-    /**
-     * 这张凭证现在还能不能用（决定列表要不要给 BOOK 按钮）。
-     * <p>与 {@code EntitlementServiceImpl} 里的同名判断保持三条件一致：
-     * ACTIVE + 有次数（或不限）+ 未过期（或永久）。★两处判断要一起改，
-     * 所以这一份只在本类算 actions 用，真正拦不拦由凭证服务在预约时判。</p>
-     */
-    private boolean isEntitlementUsable(Entitlement entitlement, LocalDateTime now) {
-        if (!"ACTIVE".equals(entitlement.getStatus())) {
-            return false;
-        }
-        int used = entitlement.getUsedTimes() == null ? 0 : entitlement.getUsedTimes();
-        boolean hasTimes = entitlement.getTotalTimes() == null || used < entitlement.getTotalTimes();
-        boolean inValid = entitlement.getValidUntil() == null || entitlement.getValidUntil().isAfter(now);
-        return hasTimes && inValid;
     }
 
     /** 实体 → 管理端 DTO（跨服务给 admin-server，含 userId 供聚合会员昵称） */

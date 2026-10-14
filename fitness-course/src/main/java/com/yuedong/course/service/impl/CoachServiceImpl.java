@@ -69,6 +69,17 @@ public class CoachServiceImpl implements CoachService {
         return result;
     }
 
+    /**
+     * 内部接口用：返回实体，因为 order 服务要 {@code workDays} 这个计算列
+     * （C 端 VO 里没有它，理由见接口注释）。
+     */
+    @Override
+    public List<Coach> listBookable(Long courseId, Long storeId) {
+        // 一条 JOIN 查完，只含 status=1：过滤条件写在 SQL 里而不是内存里筛，
+        // 这样"可约教练"的口径在课程服务内只有一份定义
+        return coachMapper.selectByCourseAndStore(courseId, storeId);
+    }
+
     @Override
     public Long save(CoachSaveDTO dto) {
         // ===== 第 1 步：跨字段校验。注解表达不了"结束必须晚于起始"这种关系，只能写在代码里 =====

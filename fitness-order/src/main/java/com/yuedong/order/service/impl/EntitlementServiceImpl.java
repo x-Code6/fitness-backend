@@ -286,29 +286,15 @@ public class EntitlementServiceImpl implements EntitlementService {
     // =====================================================================
 
     /**
-     * 凭证当下能不能拿去预约。<b>三个条件全都要判</b>，少一个就会做出"能点但必失败"的按钮：
-     * <ol>
-     *   <li>状态 ACTIVE（用完/过期的都不行）；</li>
-     *   <li>还有次数：{@code totalTimes == null}（不限次）或 {@code used < total}。
-     *       ★漏掉 null 分支会把 UNLIMITED 课判成 0 次卡；</li>
-     *   <li>未到有效期：{@code validUntil == null}（永久）或 {@code validUntil > 现在}。
-     *       ★漏掉 null 分支会把常年课判成已过期。</li>
-     * </ol>
+     * 凭证当下能不能拿去预约 —— <b>规则本身写在实体上</b>
+     * （{@link Entitlement#usableAt}），这里只是给本类的几处调用一个短名。
      *
-     * <p>预约时校验的是"能不能约 <b>那个时间点</b>"，比这里严：要判断
-     * {@code start_time < validUntil}（凭证在上课时刻还有效），而不是"现在这一刻还有效"。
-     * 两者差别在"有效期最后一天约晚上的课"这个场景上，实现在预约分支里。</p>
+     * <p>★为什么不在这里再抄一遍三个条件：预约创建时要问的是"<b>上课那一刻</b>还有效吗"，
+     * 列表页问的是"现在还能用吗"。两处各写一份判断，迟早会有一份漏掉 NULL 分支，
+     * 而漏掉的后果是"不限次课约不了"或"常年课被当过期"这种线上事故级错误。</p>
      */
     private boolean isBookable(Entitlement entitlement, LocalDateTime moment) {
-        if (!EntitlementStatus.ACTIVE.equals(entitlement.getStatus())) {
-            return false;
-        }
-        boolean hasTimes = entitlement.getTotalTimes() == null
-                || (entitlement.getUsedTimes() == null ? 0 : entitlement.getUsedTimes())
-                < entitlement.getTotalTimes();
-        boolean inValid = entitlement.getValidUntil() == null
-                || entitlement.getValidUntil().isAfter(moment);
-        return hasTimes && inValid;
+        return entitlement.usableAt(moment);
     }
 
     /** 实体 → C 端 VO（字段名对齐前端 Mock 的 entitlementVO，派生值全部在这里算完） */
