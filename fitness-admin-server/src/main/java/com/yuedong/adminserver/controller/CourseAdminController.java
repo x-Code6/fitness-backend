@@ -6,7 +6,6 @@ import com.yuedong.common.result.Result;
 import com.yuedong.course.api.client.CourseAdminClient;
 import com.yuedong.course.api.dto.CourseAdminDTO;
 import com.yuedong.course.api.dto.CourseSaveDTO;
-import com.yuedong.course.api.dto.ScheduleDTO;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -55,25 +54,24 @@ public class CourseAdminController {
         return courseClient.courseDelete(id);
     }
 
-    // ---------- 排期管理 ----------
+    // ---------- 可售门店 ----------
 
-    /** 某课程的场次列表 */
-    @GetMapping("/schedule/list")
-    public Result<List<ScheduleDTO>> scheduleList(@RequestParam Long courseId) {
-        return courseClient.scheduleList(courseId);
+    /** 某课程当前配置的可售门店 id 列表（表单回显） */
+    @GetMapping("/store-list")
+    public Result<List<Long>> storeList(@RequestParam Long courseId) {
+        return courseClient.courseStoreList(courseId);
     }
 
-    @OperateLog(module = "排期管理", operation = "新增场次")
-    @PostMapping("/schedule/save")
-    public Result<Void> scheduleSave(@RequestParam Long courseId,
-                                     @RequestParam String scheduleTime,
-                                     @RequestParam Integer capacity) {
-        return courseClient.scheduleSave(courseId, scheduleTime, capacity);
-    }
-
-    @OperateLog(module = "排期管理", operation = "删除场次")
-    @PostMapping("/schedule/delete")
-    public Result<Void> scheduleDelete(@RequestParam Long scheduleId) {
-        return courseClient.scheduleDelete(scheduleId);
+    /**
+     * 整体替换某课程的可售门店。
+     *
+     * <p>★v2 用这个接口取代原来的"场次管理"三个接口。旧模型是"给课程排时间"，
+     * 新模型是"决定这门课在哪家店卖"——具体什么时候能上课，由教练时段决定，
+     * 不在课程管理页配置。</p>
+     */
+    @OperateLog(module = "课程管理", operation = "配置可售门店")
+    @PostMapping("/assign-store")
+    public Result<Void> assignStore(@RequestParam Long courseId, @RequestBody List<Long> storeIds) {
+        return courseClient.courseAssignStore(courseId, storeIds);
     }
 }

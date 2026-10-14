@@ -36,8 +36,14 @@ public class AuthAdminController {
     private static final Duration CAPTCHA_TTL = Duration.ofMinutes(2);
 
     /** 角色对应的菜单权限（前端动态渲染侧边栏） */
+    /**
+     * 角色 → 可见菜单。
+     *
+     * <p>★v2 去掉了 "verify"（核销工作台）：核销的对象是预约单，预约模型还没落地，
+     * 留着一个点开就报错的入口比没有更糟。随预约分支一起回来。</p>
+     */
     private static final Map<String, List<String>> ROLE_MENUS = Map.of(
-            "SUPER", List.of("dashboard", "courses", "seckill", "orders", "verify",
+            "SUPER", List.of("dashboard", "courses", "seckill", "orders",
                     "coupons", "gifts", "members", "stores", "logs"),
             "OPERATOR", List.of("dashboard", "courses", "seckill", "orders", "coupons", "gifts"));
 

@@ -3,7 +3,6 @@ package com.yuedong.order.mq.consumer;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.yuedong.common.constant.MqConstants;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.yuedong.course.api.client.CourseClient;
 import com.yuedong.course.api.client.CouponClient;
 import com.yuedong.order.constant.BookingStatus;
 import com.yuedong.order.mapper.BookingMapper;
@@ -21,10 +20,15 @@ import org.springframework.stereotype.Component;
 import java.io.IOException;
 
 /**
- * 订单超时取消消费者：下单 15 分钟后仍未支付 → 自动取消并释放名额。
+ * 订单超时取消消费者：下单 15 分钟后仍未支付 → 自动取消并退回优惠券。
  *
- * <p>状态安全：cancel 是 CAS 式 UPDATE（仅 UNPAID/BOOKED 可取消），
- * 用户恰好在这时支付成功的话，这里影响行数为 0，不会误取消。</p>
+ * <p>★延迟消息不需要"撤回"：本方法只用一条 CAS（{@code WHERE status='UNPAID'}）决定要不要动手。
+ * 用户恰好在这时支付成功了，影响行数就是 0，这里什么都不做。
+ * 这比"支付成功后去撤销延迟消息"简单得多也不会出错——RabbitMQ 本来也撤不回已投递的消息。</p>
+ *
+ * <p>★v2 里这里<b>没有释放名额这一步</b>：购买不占名额，时段占用发生在创建预约时。
+ * 旧代码那段 {@code releaseSchedule/release} 调用既是跨服务写、又不检查返回值，
+ * 是"取消一次就凭空多出一个空位"这类 bug 的来源。</p>
  */
 @Slf4j
 @Component
@@ -32,7 +36,6 @@ import java.io.IOException;
 public class BookingTimeoutConsumer {
 
     private final BookingMapper bookingMapper;
-    private final CourseClient courseClient;
     private final CouponClient couponClient;
     private final ObjectMapper objectMapper;
     private final NotifyPublisher notifyPublisher;
@@ -43,38 +46,50 @@ public class BookingTimeoutConsumer {
         try {
             OrderTimeoutMessage msg = objectMapper.readValue(json, OrderTimeoutMessage.class);
 
-            // ===== 第 1 步：查订单，只有仍未支付的才需要取消 =====
+            // ===== 第 1 步：状态预判。不为 UNPAID 的直接放过，省一次写操作 =====
             Booking booking = bookingMapper.selectOne(new LambdaQueryWrapper<Booking>()
                     .eq(Booking::getOrderNo, msg.getOrderNo()));
             if (booking == null || !BookingStatus.UNPAID.equals(booking.getStatus())) {
-                // 已支付/已取消/不存在：无事可做
                 channel.basicAck(deliveryTag, false);
                 return;
             }
 
-            // ===== 第 2 步：CAS 取消（并发支付时这里影响行数为 0） =====
-            int rows = bookingMapper.cancel(msg.getOrderNo(), "超时未支付，系统自动取消");
-            if (rows > 0 && BookingStatus.occupiesSlot(booking.getStatus())) {
-                // ===== 第 3 步：释放名额（场次或课程） + 退券 + 站内通知 =====
-                if (booking.getScheduleId() != null) {
-                    courseClient.releaseSchedule(booking.getScheduleId());
-                } else {
-                    courseClient.release(booking.getCourseId());
-                }
+            // ===== 第 2 步：CAS 取消。并发下（用户正好在支付）只有一个能改成功 =====
+            int rows = bookingMapper.cancelIfUnpaid(msg.getOrderNo(), java.time.LocalDateTime.now());
+            if (rows > 0) {
+                // ===== 第 3 步：退券 + 站内通知 =====
+                // ★检查退券结果：旧代码连返回值都不看，券没退成也当成功，
+                //   用户之后会发现"券显示已使用"却找不到对应订单
                 if (booking.getCouponRecordId() != null) {
-                    couponClient.refund(booking.getCouponRecordId()); // 券退回为未使用
+                    try {
+                        var refundResult = couponClient.refund(booking.getCouponRecordId());
+                        if (refundResult.getCode() != 0 || !Boolean.TRUE.equals(refundResult.getData())) {
+                            log.error("超时取消后退券失败，需人工核对: orderNo={}, couponRecordId={}",
+                                    msg.getOrderNo(), booking.getCouponRecordId());
+                        }
+                    } catch (Exception e) {
+                        // 订单已经取消（已提交），这里抛不出去也修不了，只能留痕
+                        log.error("超时取消退券异常: orderNo={}", msg.getOrderNo(), e);
+                    }
                 }
+
+                boolean usedCoupon = booking.getDiscountAmount() != null
+                        && booking.getDiscountAmount().compareTo(java.math.BigDecimal.ZERO) > 0;
                 notifyPublisher.publishBookingNotify(msg.getUserId(), "订单已自动取消",
-                        "「" + booking.getCourseName() + "」的预约超时未支付，名额已自动释放"
-                                + (booking.getDiscountAmount() != null && booking.getDiscountAmount().compareTo(java.math.BigDecimal.ZERO) > 0
-                                ? "，优惠券已退回。" : "。"));
+                        "「" + booking.getCourseName() + "」的订单超时未支付，已自动取消"
+                                + (usedCoupon ? "，优惠券已退回。" : "。"));
                 log.info("订单超时自动取消: orderNo={}", msg.getOrderNo());
             }
+
+            // 无论有没有真的取消，这条消息的使命都完成了 —— 必须 ack，否则会无限重投
             channel.basicAck(deliveryTag, false);
         } catch (Exception e) {
             log.error("订单超时取消处理失败: {}", json, e);
-            // 重试一次（requeue=true），仍失败则进死信（该队列未配 DLX 则消息丢弃，生产应配）
-            channel.basicNack(deliveryTag, false, true);
+            // ★改掉一个真问题：原来用 requeue=true，消息立刻回到队列头部，
+            //   如果失败原因是数据本身（毒消息），就会<b>无限立即重投>把消费者线程打满</b>。
+            //   改成 requeue=false 让它进死信队列（RabbitConfig 已给该队列挂上 DLX），
+            //   死信留着事后排查，而不是把线上资源耗光。
+            channel.basicNack(deliveryTag, false, false);
         }
     }
 }

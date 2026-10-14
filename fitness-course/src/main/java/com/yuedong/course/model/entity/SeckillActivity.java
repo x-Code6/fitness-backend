@@ -29,6 +29,15 @@ public class SeckillActivity {
     @TableField("course_id")
     private Long courseId;
 
+    /**
+     * 专场所属门店。
+     * <p>★实现 v2 时才补上的列：订单要写 store_id（凭证认店，之后只能在该店约教练），
+     * 而"哪家店"必须由活动定义——让用户抢的时候再选店，等于让同一口价对应多个履约主体，
+     * 出问题（超卖、跨店履约）时根本说不清归谁。</p>
+     */
+    @TableField("store_id")
+    private Long storeId;
+
     /** 秒杀价 */
     @TableField("seckill_price")
     private BigDecimal seckillPrice;

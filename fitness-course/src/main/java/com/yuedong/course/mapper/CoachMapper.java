@@ -39,4 +39,20 @@ public interface CoachMapper extends BaseMapper<Coach> {
              ORDER BY c.id
             """)
     List<Coach> selectByCourseAndStore(@Param("courseId") Long courseId, @Param("storeId") Long storeId);
+
+    /**
+     * 数"这门课在这家店有几位教练可约"，用于课程详情页的吸引力文案（"3 位教练可约"）。
+     *
+     * <p>单独写 COUNT 而不是把上面的列表查出来再 {@code size()}：
+     * 详情页此时不需要教练明细，取回整行数据再丢弃是浪费。</p>
+     */
+    @Select("""
+            SELECT COUNT(1)
+              FROM t_coach c
+              JOIN t_coach_course cc ON cc.coach_id = c.id
+             WHERE cc.course_id = #{courseId}
+               AND c.store_id = #{storeId}
+               AND c.status = 1
+            """)
+    int countByCourseAndStore(@Param("courseId") Long courseId, @Param("storeId") Long storeId);
 }

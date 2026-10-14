@@ -15,6 +15,10 @@ public class SeckillSaveDTO {
     @NotNull(message = "课程不能为空")
     private Long courseId;
 
+    /** 专场门店。★必填：订单与凭证都要认店，没有它这条活动建出来也履约不了 */
+    @NotNull(message = "请选择秒杀专场的门店")
+    private Long storeId;
+
     @NotNull(message = "秒杀价不能为空")
     private BigDecimal seckillPrice;
 

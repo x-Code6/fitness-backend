@@ -20,6 +20,12 @@ public class SeckillAdminDTO {
 
     private String courseName;
 
+    /** 专场门店 id */
+    private Long storeId;
+
+    /** 专场门店名（列表直接显示，省得前端再查一次门店） */
+    private String storeName;
+
     private BigDecimal seckillPrice;
 
     private Integer total;

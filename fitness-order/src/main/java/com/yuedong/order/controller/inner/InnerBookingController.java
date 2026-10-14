@@ -16,7 +16,7 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.List;
 
 /**
- * 订单服务内部接口（管理端核销工作台/订单管理经后端转发调用；网关拒绝外部直访 /inner/**）。
+ * 订单服务内部接口（管理端订单管理经 admin-server 转发调用；网关拒绝外部直访 /inner/**）。
  * 签名与 fitness-order-api 的 BookingClient 一一对应。
  */
 @RestController
@@ -27,16 +27,6 @@ public class InnerBookingController {
 
     private final BookingService bookingService;
 
-    /**
-     * 按核销码核销预约单：BOOKED → FINISHED（一码一次）。
-     *
-     * @param code 10 位核销码
-     */
-    @PostMapping("/verify")
-    public Result<BookingDTO> verify(@RequestParam String code) {
-        return Result.ok(bookingService.verifyByCode(code));
-    }
-
     /** 管理端：订单分页（全用户，状态/关键词筛选） */
     @GetMapping("/admin/page")
     public Result<PageDTO<BookingDTO>> adminPage(@RequestParam(required = false) String status,
@@ -46,16 +36,16 @@ public class InnerBookingController {
         return Result.ok(bookingService.adminPage(status, keyword, page, size));
     }
 
-    /** 管理端：代客取消 */
+    /**
+     * 管理端：代客取消未支付订单。
+     *
+     * <p>★v2 移除了 {@code /verify} 与 {@code /verified/recent}：核销的对象是<b>预约单</b>
+     * （教练确认这个人来上过课），不是订单。它们随预约分支一起回来，
+     * 挂到 {@code /inner/reservation/**} 下。留在订单上就是把三条状态机轴又塞回一张表。</p>
+     */
     @PostMapping("/admin/cancel")
     public Result<Void> adminCancel(@RequestParam String orderNo) {
         bookingService.adminCancel(orderNo);
         return Result.ok();
-    }
-
-    /** 管理端：最近核销记录 */
-    @GetMapping("/verified/recent")
-    public Result<List<BookingDTO>> verifiedRecent() {
-        return Result.ok(bookingService.verifiedRecent());
     }
 }

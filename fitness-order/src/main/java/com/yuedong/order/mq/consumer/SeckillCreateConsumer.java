@@ -88,32 +88,46 @@ public class SeckillCreateConsumer {
                 return;
             }
 
-            // ===== 第 3 步：查活动价格与课程信息（Feign） =====
+            // ===== 第 3 步：查活动与课程信息（两次 Feign 只读调用） =====
+            // ★门店来自活动（t_seckill_activity.store_id）而不是课程：v2 里课程不再属于单店。
+            //   活动一旦查不到就无法确定这条订单属于哪家店，宁可判失败也不能"按原价兜底"蒙混——
+            //   旧实现那个兜底建出来的单没有门店，之后既约不了教练也退不了款。
             var activeResult = courseClient.activeSeckill(msg.getCourseId());
-            var courseResult = courseClient.detail(msg.getCourseId());
+            if (activeResult.getCode() != 0 || activeResult.getData() == null
+                    || activeResult.getData().getStoreId() == null) {
+                throw new BusinessException(ErrorCode.SECKILL_NOT_ACTIVE, "秒杀活动已结束或门店未配置");
+            }
+            SeckillActiveDTO active = activeResult.getData();
+            Long storeId = active.getStoreId();
+            BigDecimal seckillPrice = active.getSeckillPrice();
+
+            var courseResult = courseClient.detail(msg.getCourseId(), storeId);
             if (courseResult.getCode() != 0 || courseResult.getData() == null) {
                 throw new BusinessException(ErrorCode.COURSE_NOT_FOUND);
             }
             CourseDTO course = courseResult.getData();
-            BigDecimal seckillPrice = activeResult.getData() != null
-                    ? activeResult.getData().getSeckillPrice()
-                    // 活动恰好结束的边缘情况：按原价兜底
-                    : course.getPrice();
-            SeckillActiveDTO active = activeResult.getData();
 
-            // ===== 第 4 步：创建待支付订单 =====
+            // ===== 第 4 步：创建待支付订单（★没有 book_time：购买不带时间，时间属于预约） =====
             Booking booking = new Booking();
             booking.setOrderNo("B" + System.currentTimeMillis()
                     + ThreadLocalRandom.current().nextInt(100, 1000));
             booking.setUserId(msg.getUserId());
             booking.setCourseId(msg.getCourseId());
+            booking.setCourseKind(course.getCourseKind());
             booking.setActivityId(msg.getActivityId());
+            booking.setStoreId(storeId);
             booking.setCourseName(course.getName());
-            booking.setCoach(course.getCoach());
-            booking.setBookTime(course.getNextTime());
-            booking.setStoreName(course.getStoreName());
-            booking.setPrice(seckillPrice);
+            booking.setStoreName(course.getStoreName() == null ? "门店未配置" : course.getStoreName());
+            booking.setLessonHours(course.getLessonHours());
+            booking.setSaleType(course.getSaleType());
+            booking.setTimesGranted("UNLIMITED".equals(course.getSaleType()) ? null : 1);
+            booking.setQuantity(1);
+            // 原价小计存课程原价、实付存秒杀价：详情页要显示划线原价，这两个不能合并成一个字段
+            booking.setOriginalAmount(course.getPrice());
+            booking.setDiscountAmount(course.getPrice().subtract(seckillPrice).max(java.math.BigDecimal.ZERO));
+            booking.setPayAmount(seckillPrice);
             booking.setStatus(BookingStatus.UNPAID);
+            booking.setRefunded(0);
             bookingMapper.insert(booking);
 
             // ===== 第 5 步：同样发 15 分钟延迟取消消息 =====
