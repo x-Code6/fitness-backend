@@ -46,13 +46,36 @@ public class Post {
     @TableField("topic")
     private String topic;
 
-    /** 点赞数（冗余计数，点赞/取消时增减） */
+    /**
+     * 可见性：PUBLIC 公开 / FRIEND 仅互关好友 / PRIVATE 私密。
+     * <p>★存一列就够，但<b>查询策略必须按档分工</b>（docs 4.12 K3）：
+     * 推荐流与关注流扇出只装 PUBLIC；FRIEND 用拉模式在"好友动态"里查；
+     * 混进一个 OR 查询就会让索引失效。</p>
+     */
+    @TableField("visibility")
+    private String visibility;
+
+    /** 点赞数（冗余计数，只由本服务的原子 UPDATE 改） */
     @TableField("like_count")
     private Integer likeCount;
 
-    /** 评论数（冗余计数） */
+    /** 收藏数。★和点赞分列：语义不同（收藏=我要留着），热度加权也更高 */
+    @TableField("collect_count")
+    private Integer collectCount;
+
+    /** 评论数（含二级回复） */
     @TableField("comment_count")
     private Integer commentCount;
+
+    /**
+     * 浏览量<b>账本</b>。
+     * <p>★实时累加在 Redis Hash（{@code post:view:delta}），定时任务原子取出后
+     * 用 {@code view_count = view_count + delta} 刷进这里。
+     * DB 永远是真相、Redis 只是缓冲，所以 Redis 被清空只会"少一批未刷的增量"，
+     * 而不是像旧实现那样把业务状态整个丢掉。</p>
+     */
+    @TableField("view_count")
+    private Integer viewCount;
 
     /** 1 正常 / 0 已删除 */
     @TableField("status")

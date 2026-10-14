@@ -19,6 +19,14 @@ spring:
     port: ${MQ_PORT:5672}
     username: ${MQ_USER:guest}
     password: ${MQ_PASS:guest}
+  # Kafka：只作为<b>生产者</b>，而且只发一种事件（post_view）到 behavior 那条 topic。
+  # ★不新开 topic、不在这里配 consumer：浏览明细的落库由 fitness-behavior 的消费者负责，
+  #   计数本身走 Redis，Kafka 在这里只承担"留原始数据、可重算"这一件事。
+  kafka:
+    bootstrap-servers: ${KAFKA_ADDR:127.0.0.1:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
   cloud:
     nacos:
       discovery:
@@ -30,6 +38,12 @@ mybatis-plus:
     log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
   global-config:
     banner: false
+
+community:
+  # 浏览量刷库间隔（PostViewFlushTask 的 fixedDelay）。
+  # 它同时是"Redis 里最多滞留多久的未入账增量"——Redis 挂掉时会丢的就是这一段。
+  # 调小 = 少丢数据但 DB 敲得更勤，30 秒是"体感滞后可接受 + 空闲时几乎不打 DB"的折中。
+  view-flush-delay-ms: 30000
 
 logging:
   level:

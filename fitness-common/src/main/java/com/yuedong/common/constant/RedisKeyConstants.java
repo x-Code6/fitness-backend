@@ -111,11 +111,39 @@ public final class RedisKeyConstants {
 
     // ==================== 社区域（community 服务） ====================
 
-    /** Feed 推模式收件箱，ZSet，score=发布时间戳 */
+    /** Feed 推模式收件箱，ZSet：key=feed:inbox:{用户id}，member=动态id，score=发布时间戳，只留最近 1000 条 */
     public static final String FEED_INBOX = "feed:inbox:";
 
     public static String feedInbox(Long userId) {
         return FEED_INBOX + userId;
+    }
+
+    /**
+     * 浏览量增量缓冲，Hash：field=动态id，value=未入账的浏览次数。
+     *
+     * <p>★写这个键的是浏览上报（一次 HINCRBY），读它的是定时任务：
+     * 任务用 {@code HINCRBY field -delta} 原子取出后再 {@code view_count = view_count + delta} 入账。
+     * <b>DB 的 view_count 才是账本，这里只是缓冲</b>——Redis 被清空最多丢掉未刷的增量，
+     * 不会像"唯一真相在 Redis"那样把业务状态整块丢掉。</p>
+     *
+     * <p>★故意<b>不加 TTL 也不定期 DEL</b>：DEL 会在"读增量"与"删键"之间吃掉新产生的浏览。
+     * Hash 的 field 数上限就是动态数，内存可控。</p>
+     */
+    public static final String POST_VIEW_DELTA = "post:view:delta";
+
+    /**
+     * 浏览去重集合，Set：key=post:viewed:{yyyyMMdd}，member={postId}:{userId}。
+     *
+     * <p>为什么必须去重：浏览量参与热度排序，<b>不去重的"廉价异步计数"等于给刷量开绿灯</b>。
+     * 一人一帖一天只计一次，刷到第十次也只是同一个 member。</p>
+     *
+     * <p>TTL 给 3 天（不是 25 小时）：跨零点时先写 key 再设 TTL 的间隙、
+     * 以及机器时钟略偏，都不该让用户"今天永远计不上"。过期即自动清理，不需要任务。</p>
+     */
+    public static final String POST_VIEWED = "post:viewed:";
+
+    public static String postViewed(String yyyyMMdd) {
+        return POST_VIEWED + yyyyMMdd;
     }
 
     // ==================== 登录态（user 签发 / gateway 校验，跨服务共享） ====================

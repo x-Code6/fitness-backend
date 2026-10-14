@@ -63,7 +63,7 @@
 #
 # ---------------------------------------------------------------------------
 # 内存预算（按 VM 只给 6G 算，8G 也照这份配、不必改）
-#   mysql  700m   （InnoDB buffer pool 压到 256M，够跑 6 个库）
+#   mysql  700m   （InnoDB buffer pool 压到 256M，够跑 7 个库）
 #   redis  300m   （maxmemory 256mb）
 #   rabbit 512m   （内存高水位 400M）
 #   nacos  700m   （堆显式压到 512m；之前实测不设时是 1g，小 VM 上就是它先撑爆的）
@@ -93,7 +93,7 @@
 #   3. http://VM_IP:15672                   用 fitness/fitness123 登录；
 #      Administration → Features 里要能看到 delayed message exchange（没有就是插件丢了）
 #   4. 数据库客户端连 VM_IP:3306            应看到 yd_user/yd_course/yd_order/
-#      yd_point/yd_behavior/yd_admin 六个库；少一个就是 SQL 没导入成功
+#      yd_point/yd_behavior/yd_admin/yd_community 七个库；少一个就是 SQL 没导入成功
 #   5. docker exec -it fitness-mysql mysql -uroot -p123456 -e "show databases;"
 #   6. 先起 course 再起 order，Nacos 里出现两个实例后，用 gateway 走一次登录 + 列表，
 #      通了说明"中间件 + 服务 + 注册发现"这条链路完整。
@@ -146,7 +146,7 @@ services:
       - "3306:3306"
     volumes:
       - mysql-data:/var/lib/mysql
-      # 建表脚本：../sql 是 01_yd_user.sql … 06_yd_admin.sql，MySQL 按文件名字母序执行，
+      # 建表脚本：../sql 是 01_yd_user.sql … 07_yd_community.sql，MySQL 按文件名字母序执行，
       # 数字前缀就是为这个加的（老脚本 increment_* 会排在建表前面，全新初始化必失败）。
       # ⚠️ 只在"数据卷是空的"时候执行一次。改过 SQL 要重导：
       #     docker compose -f docker-compose.middleware.yml down -v   # -v 连数据卷一起删
