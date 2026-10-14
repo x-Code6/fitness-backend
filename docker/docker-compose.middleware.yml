@@ -27,18 +27,31 @@
 #   为什么 VM_IP 必须改：Kafka 会把"客户端该连哪个地址"告诉对方，容器里写 localhost
 #   的话，Windows 上的 behavior 服务拿到地址后连的是自己 → 连不上。
 #
-# ★ 必做自检一次：docker images 核对 image 行的 tag 在 VM 上是否真的存在。
-#   你直连 Docker Hub 不方便，所以这里的 tag 尽量按 VM 上已有的镜像填；
-#   哪一行本地没有，就改成你 ACR 个人版前缀的同类镜像，不要硬拉。
-#   当前 6 个 tag：mysql:8.0 / redis:7 / nacos-server:v2.4.3 /
-#                 lifetools-rabbitmq:3.13-delayed / apache/kafka:3.9.0 /
-#                 nginx:1.27-alpine ← 这个是新的，VM 上大概还没有，要先解决拉取
+# ★ 铁律：每一个 image 都必须和 VM 上 docker images 里的 tag 逐字符一致。
+#   这台 VM 连不上 Docker Hub（实测 dial tcp ...:443: connect: connection refused），
+#   而 compose 遇到本地没有的名字就会当成 docker.io/library/xxx 去拉 —— 一定失败。
+#   所以本地已有镜像的【名字】是唯一的保险；想用新镜像就推到你自己的 ACR、再用全名。
+#   注意 mysql:8.0 只有本地 tag、ACR 上没有它的记录，VM 重做后要留意。
+#   当前 6 个 image（全部已核对存在）：
+#     mysql:8.0 / redis:7.4 / nacos-server:v2.4.3 /
+#     rabbitmq:3.13-management / kafka:3.9.2 / nginx:1.27-alpine
+#   ACR 全名前缀（同一个镜像）：
+#     crpi-2gz9tuyd1xcuucrl.cn-hangzhou.personal.cr.aliyuncs.com/li_yu_xuan/
+#   另外 VM 上还有 sentinel-dashboard:1.8.10，但代码里零引用，所以这里不放它。
+#
+# ⚠️ 两个 tag 是"本地改过名"的，别被版本号骗了：
+#   nacos-server:v2.4.3 与 ACR 的 nacos-server:v2.5.4 镜像 ID 相同（cedf09a98a79）；
+#   nginx:1.27-alpine 与 ACR 的 nginx:1.28-alpine 镜像 ID 相同（0dcc88822d45）。
+#   想知道 Nacos 到底是什么版本（决定控制台是 8848 还是 3.x 的独立 8080 端口），
+#   别猜：docker logs fitness-nacos 2>&1 | head -20 看启动行，或看控制台页脚版本号。
+#
 #
 # ★ 为什么这里没有 Sentinel：代码里目前零引用（所有 pom.xml 和 application.yml 都搜不到
-#   sentinel），现在加进来就是个空跑的容器。按设计文档 D13/4.6，限流属于第 5 期，
+#   sentinel），加了就是个空跑的容器 —— 虽然镜像你已经有了（sentinel-dashboard:1.8.10），
+#   缺的是代码那边的依赖，不是镜像。按设计文档 D13/4.6，限流属于第 5 期，
 #   到时候要一起加三样：gateway 的两个依赖、规则持久化到 Nacos、dashboard 容器
 #   （dashboard 必须 -Dserver.port=8858，它默认 8080，会和网关抢端口）。
-#   那一期的再往这个文件里补一段 service 就行。
+#   那一期的 image 行直接写本地已有的 sentinel-dashboard:1.8.10 就行。
 #
 # ★ Nginx 接入层：链路是「前端 → Nginx(VM:80) → 网关(8080) → 业务服务」，服务段已启用，
 #   配置在同目录 nginx/nginx.conf（里面那个 Windows IP 是第 2 个必改项）。
@@ -141,7 +154,7 @@ services:
   # 2) Redis 7 —— 缓存三件套 + 登录令牌白名单 + 幂等锁 + 签到/排行榜
   # ==========================================================================
   redis:
-    image: redis:7
+    image: redis:7.4                 # VM 上是 7.4，没有裸的 redis:7
     container_name: fitness-redis
     restart: unless-stopped
     mem_limit: 300m
@@ -174,15 +187,29 @@ services:
   # 3) RabbitMQ 3.13 + 延迟消息插件 —— 秒杀削峰 / 订单 15 分钟超时取消 / 站内通知
   # ==========================================================================
   rabbitmq:
-    # 这个镜像是小程序项目自建的，已经把 rabbitmq_delayed_message_exchange 烤进去了
-    # （构建上下文 F:/生活工具小程序/rabbitmq）。
-    # ⚠️ 插件是硬需求：订单服务把 ex.order.delay 声明成 x-delayed-message 类型的交换机，
-    #   3.13 起官方把这个插件挪出了默认发行包、要单独下载，缺了它 order 服务启动时
-    #   声明交换机就会报 unknown exchange type。所以这里直接用带插件的现成镜像，
-    #   不换官方镜像（换的话要自己下 .ez 挂进 /plugins 再 enable，麻烦且容易版本不匹配）。
-    #   自检：docker exec fitness-rabbitmq rabbitmq-plugins list | grep delayed
-    #         看到 [E*] 开头才算启用（E=enabled）。
-    image: lifetools-rabbitmq:3.13-delayed
+    # VM 上没有那个自建镜像（lifetools-rabbitmq:3.13-delayed），只有官方的
+    # rabbitmq:3.13-management，所以照实写它。
+    # ⚠️⚠️ 但延迟插件必须实测确认 —— 这是本文件唯一还没落实的风险 ⚠️⚠️
+    # 订单服务把 ex.order.delay 声明成 x-delayed-message 类型的交换机
+    # （fitness-order/mq/RabbitConfig.java），缺插件时 order 一启动就报
+    # unknown exchange type，后果是"15 分钟未支付自动取消"整条链路静默失效。
+    # 官方 3.13 镜像到底带不带这个插件，网上说法不一致，别信任何人的记忆（包括我的）——
+    # 容器起来后花十秒实测：
+    #   docker exec fitness-rabbitmq rabbitmq-plugins list | grep -i delayed
+    # 三种结果对应三种做法：
+    #   [E*] → 已启用，什么都不用做（最理想）。
+    #   [e ] → 插件在镜像里但没启用，一条命令搞定（节点正在跑，不用 --offline）：
+    #          docker exec fitness-rabbitmq rabbitmq-plugins enable rabbitmq_delayed_message_exchange
+    #          然后 docker restart fitness-rabbitmq，再查一次变成 [E*] 就对了。
+    #   没有 → 镜像里真没有。别去下载 .ez（这机器连不上外网仓库），用你自己那套现成的：
+    #          Windows 的 F:/生活工具小程序/rabbitmq 目录里就有 Dockerfile + .ez，
+    #          lifetools-rabbitmq:3.13-delayed 那台就是这么 build 出来的。
+    #          scp 上 VM → docker build -t lifetools-rabbitmq:3.13-delayed .
+    #          → 把下面 image 行换成它 → docker compose -f ... up -d rabbitmq
+    # 顺带纠正一条你刚才敲的命令：docker exec 要的是【容器名或容器 ID】，不是镜像名，
+    # 而且那时容器还没起来，所以报 No such container。查镜像用：
+    #   docker run --rm --entrypoint sh rabbitmq:3.13-management -c 'ls /opt/rabbitmq/plugins'
+    image: rabbitmq:3.13-management
     container_name: fitness-rabbitmq
     restart: unless-stopped
     mem_limit: 512m
@@ -258,7 +285,11 @@ services:
   # 5) Kafka 3.9（KRaft 单节点，免 ZooKeeper）—— 埋点事件流
   # ==========================================================================
   kafka:
-    image: apache/kafka:3.9.0
+    # VM 上的 tag 是 kafka:3.9.2（不带 apache/ 前缀），照它写。
+    # ⚠️ 下面的参数名用的是官方 apache/kafka 那套 KAFKA_XXX_YYY 风格。
+    #   如果这镜像其实是 bitnami 系（要 KAFKA_CFG_XXX 前缀），表现是"容器起来了但
+    #   KRaft/监听器配置没生效"。核对：docker logs fitness-kafka 2>&1 | head -30
+    image: kafka:3.9.2
     container_name: fitness-kafka
     restart: unless-stopped
     mem_limit: 768m
@@ -311,7 +342,7 @@ services:
   # 前端统一入口：浏览器/小程序 → Nginx(VM:80) → 网关(8080) → 业务服务
   # 配置文件在同目录 nginx/nginx.conf，里面还有一个必改项（网关所在的 Windows IP）。
   nginx:
-    image: nginx:1.27-alpine         # ⚠️ VM 上还没这个镜像，得先解决一次拉取
+    image: nginx:1.27-alpine         # VM 上已有（与 ACR 的 1.28-alpine 是同一个镜像 ID）
     container_name: fitness-nginx
     restart: unless-stopped
     mem_limit: 64m                   # Nginx 很轻，64M 足够
