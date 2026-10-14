@@ -9,7 +9,6 @@ import org.springframework.stereotype.Component;
 
 import java.util.HashMap;
 import java.util.Map;
-import java.util.UUID;
 
 /**
  * 课程域事件发布器：完课事件 → point 服务消费 +30 积分。
@@ -36,7 +35,13 @@ public class CourseEventPublisher {
     public void publishCourseFinished(Long userId, Long videoId, String videoTitle) {
         try {
             Map<String, Object> event = new HashMap<>();
-            event.put("eventId", UUID.randomUUID().toString()); // 消费端幂等键
+            // ★★★P0-3 的核心一行：eventId 必须是<b>业务键</b>而不是 UUID。
+            // 消费端两层幂等（Redis SETNX eventId、t_points_log 的 uk_biz(biz_type,biz_id)）
+            // 用的都是这个值。以前它每次调用都新生成一个 UUID，于是"同一场完课发两遍"时
+            // 两层幂等<b>全都认为这是两条新事件</b> → +30 分重复到账、排行榜跟着虚高。
+            // 业务键 userId:videoId 天然唯一：一个人对一个视频只会完课一次，
+            // 所以"重复发"和"重复入账"会被同一个键挡住——这才叫幂等键。
+            event.put("eventId", userId + ":" + videoId);
             event.put("userId", userId);
             event.put("videoId", videoId);
             event.put("videoTitle", videoTitle);

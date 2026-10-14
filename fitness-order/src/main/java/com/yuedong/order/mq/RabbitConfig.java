@@ -91,7 +91,28 @@ public class RabbitConfig {
 
     @Bean
     public Queue orderTimeoutQueue() {
-        return new Queue(MqConstants.ORDER_TIMEOUT_QUEUE, true);
+        // ★P0-10：这条队列以前没有死信配置。消费失败时 basicNack(requeue=false)
+        //   在没有 DLX 的队列上等于"消息被静默丢弃"——订单永远没人取消，
+        //   而日志里只有一行 error，看起来像"已经处理过了"。
+        //   有 DLX 之后它落在 q.order.timeout.dlq 里，看得见、也能人工重投。
+        // ⚠️ 队列参数<b>不能对已存在的队列改</b>：RabbitMQ 会以 PRECONDITION_FAILED 拒绝声明。
+        //   本机/测试环境要么先删掉这个队列，要么换个队列名；这也是为什么这类改动要跟部署一起做一次
+        return QueueBuilder.durable(MqConstants.ORDER_TIMEOUT_QUEUE)
+                .deadLetterExchange(MqConstants.ORDER_DLX)
+                .deadLetterRoutingKey(MqConstants.ORDER_TIMEOUT_DLQ_KEY)
+                .build();
+    }
+
+    /** 延迟取消队列的死信队列（P0-10） */
+    @Bean
+    public Queue orderTimeoutDlq() {
+        return new Queue(MqConstants.ORDER_TIMEOUT_DLQ, true);
+    }
+
+    @Bean
+    public Binding orderTimeoutDlqBinding() {
+        return BindingBuilder.bind(orderTimeoutDlq()).to(orderDlx())
+                .with(MqConstants.ORDER_TIMEOUT_DLQ_KEY);
     }
 
     @Bean

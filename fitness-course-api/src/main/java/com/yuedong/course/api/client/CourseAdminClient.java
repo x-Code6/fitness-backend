@@ -27,12 +27,12 @@ import org.springframework.web.bind.annotation.RequestParam;
 import java.util.List;
 
 /**
- * 课程服务管理端契约：课程 / 课程可售门店 / 秒杀 / 优惠券 / 门店 五域。
+ * 课程服务管理端契约：课程 / 课程可售门店 / 两层时间窗 / 教练 / 秒杀 / 优惠券 / 门店。
  *
  * <p>★v2 把"场次（schedule）"三个方法换成"可售门店（store-list / assign-store）"两个：
- * 管理端原来要给课程排场次，现在要给课程配"在哪家店卖、什么时间能买"。
- * 时间窗的精细配置本期还没做（{@code assign-store} 用默认窗口），
- * 但"哪几家店在卖"这一步必须先能配，否则课程建好了也买不了。</p>
+ * 管理端原来要给课程排时间，现在要给课程配"在哪家店卖、什么时间能买"。
+ * 两层时间窗的<b>精细配置</b>由末尾的 {@code window/page} 与 {@code window/save} 负责（切片 L 已落地）；
+ * {@code assign-store} 只建课程×门店关系并给一套默认窗口，避免"配了门店却没生效"。</p>
  */
 @FeignClient(name = "fitness-course")
 public interface CourseAdminClient {
