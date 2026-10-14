@@ -66,7 +66,12 @@ spring:
         - id: order
           uri: lb://fitness-order
           predicates:
-            - Path=/api/booking/**,/api/seckill/**
+            # ★v2 新增四条：凭证（买到的资格）、预约与时段（约教练）、购物车、评价，
+            # 全部落在 order 域。时段查询也放这里而不是 course：
+            # 占用表 t_coach_busy 在 yd_order，接口位置由数据归属决定，不由"看起来像什么功能"决定。
+            # /api/mine/** 是"我的页四宫格"计数，它要同时数订单、凭证、预约，
+            # 三张表都在 yd_order，所以放订单服务、不在 user 服务
+            - Path=/api/booking/**,/api/seckill/**,/api/entitlement/**,/api/reservation/**,/api/cart/**,/api/rating/**,/api/mine/**
           filters:
             - StripPrefix=1
 

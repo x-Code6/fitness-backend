@@ -6,6 +6,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 
 /**
  * 课程简况 DTO：order 服务建单时跨服务取课程快照用。
@@ -64,4 +65,23 @@ public class CourseDTO {
      * 一门课"存在"不等于"能卖"，长期在售、已停售、还没开售是三种不同状态。</p>
      */
     private Boolean onSale;
+
+    // =====================================================================
+    // 可使用窗口（t_course_store 的第二层时间）。★这四列只干一件事：
+    // 让 order 服务在支付成功那一刻算出凭证的 valid_until。
+    // 不在课程服务算好直接给 validUntil，是因为"起算点"是支付时刻——
+    // 课程服务不知道用户什么时候付款，把 now() 传过去反而把两个服务的时钟耦在一起。
+    // =====================================================================
+
+    /** FOREVER 永不过期 / DAYS 自支付起 N 天 / RANGE 固定窗口。取值见 valid_type 列注释 */
+    private String validType;
+
+    /** valid_type=DAYS 时生效：领后 N 天内可用 */
+    private Integer validDays;
+
+    /** valid_type=RANGE 时生效：可使用起始（凭证不校验起始，只校验截止） */
+    private LocalDateTime useStartTime;
+
+    /** valid_type=RANGE 时生效：可使用截止。★FOREVER/DAYS 时为 null，不代表"永久"，看 validType */
+    private LocalDateTime useEndTime;
 }

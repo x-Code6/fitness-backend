@@ -7,30 +7,36 @@ import com.yuedong.common.constant.MqConstants;
 import com.yuedong.common.exception.BusinessException;
 import com.yuedong.common.model.PageDTO;
 import com.yuedong.common.result.ErrorCode;
+import com.yuedong.common.result.Result;
 import com.yuedong.course.api.client.CouponClient;
 import com.yuedong.course.api.client.CourseClient;
 import com.yuedong.course.api.dto.CouponUsableDTO;
 import com.yuedong.course.api.dto.CourseDTO;
 import com.yuedong.order.api.dto.BookingDTO;
 import com.yuedong.order.constant.BookingStatus;
+import com.yuedong.order.constant.OrderConstants;
 import com.yuedong.order.mapper.BookingMapper;
 import com.yuedong.order.model.dto.BookingCreateDTO;
 import com.yuedong.order.model.entity.Booking;
+import com.yuedong.order.model.entity.Entitlement;
 import com.yuedong.order.model.vo.BookingVO;
 import com.yuedong.order.mq.NotifyPublisher;
 import com.yuedong.order.mq.message.OrderTimeoutMessage;
 import com.yuedong.order.service.BookingService;
+import com.yuedong.order.service.EntitlementService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.core.MessageDeliveryMode;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
 
 /**
@@ -63,6 +69,7 @@ public class BookingServiceImpl implements BookingService {
     private final RabbitTemplate rabbitTemplate;
     private final NotifyPublisher notifyPublisher;
     private final ObjectMapper objectMapper;
+    private final EntitlementService entitlementService;
 
     // =====================================================================
     // 创建订单
@@ -71,7 +78,7 @@ public class BookingServiceImpl implements BookingService {
     public BookingVO create(Long userId, BookingCreateDTO dto) {
         // ===== 第 1 步：查课程快照（Feign 只读，不写远端任何东西）=====
         // 一次调用同时拿到课程字段、门店名与该店的可售状态，避免"查课程 + 再查门店"两次 RPC
-        var detailResult = courseClient.detail(dto.getCourseId(), dto.getStoreId());
+        Result<CourseDTO> detailResult = courseClient.detail(dto.getCourseId(), dto.getStoreId());
         if (detailResult.getCode() != 0 || detailResult.getData() == null) {
             throw new BusinessException(ErrorCode.COURSE_NOT_FOUND);
         }
@@ -88,12 +95,15 @@ public class BookingServiceImpl implements BookingService {
         }
 
         // ===== 第 3 步：算价（用券时先校验可用性，此时还不动券）=====
-        int quantity = 1;                       // 份数，购物车分支再接入
+        // 份数由前端传（1 份 = 1 张凭证）。★上限在凭证服务里统一判，这里只兜住非法值：
+        // 负数与 0 都按 1 处理，而不是报错——"买一份"是唯一合理的退路
+        int quantity = dto.getQuantity() == null || dto.getQuantity() < 1
+                ? 1 : Math.min(dto.getQuantity(), OrderConstants.MAX_QUANTITY_PER_ITEM);
         BigDecimal originalAmount = course.getPrice().multiply(BigDecimal.valueOf(quantity));
         BigDecimal discountAmount = BigDecimal.ZERO;
         String couponTitle = null;
         if (dto.getCouponRecordId() != null) {
-            var couponResult = couponClient.info(dto.getCouponRecordId(), userId, originalAmount);
+            Result<CouponUsableDTO> couponResult = couponClient.info(dto.getCouponRecordId(), userId, originalAmount);
             CouponUsableDTO coupon = couponResult.getData();
             if (couponResult.getCode() != 0 || coupon == null || !coupon.isUsable()) {
                 // 把券服务给的具体原因带回前端（未达门槛 / 已过期 / 不在适用课程内）。
@@ -120,8 +130,10 @@ public class BookingServiceImpl implements BookingService {
         booking.setStoreName(course.getStoreName() == null ? "门店未配置" : course.getStoreName());
         booking.setLessonHours(course.getLessonHours());
         booking.setSaleType(course.getSaleType());
-        // TIMES：一单先给 1 张凭证（份数由 quantity 决定）；UNLIMITED 存 null 表示不限次
-        booking.setTimesGranted("UNLIMITED".equals(course.getSaleType()) ? null : 1);
+        // TIMES：一单给几次 = 课程的 times_per_buy（管理员配课时定的，★不是固定 1；
+        // 种子数据里"私教·增肌入门"就是买一单给 2 次）。UNLIMITED 存 null 表示不限次
+        booking.setTimesGranted("UNLIMITED".equals(course.getSaleType()) ? null
+                : (course.getTimesPerBuy() == null || course.getTimesPerBuy() < 1 ? 1 : course.getTimesPerBuy()));
         booking.setQuantity(quantity);
         booking.setOriginalAmount(originalAmount);
         booking.setDiscountAmount(discountAmount);
@@ -138,7 +150,7 @@ public class BookingServiceImpl implements BookingService {
         // ⚠️ 残留缺口要说清：若"核销请求其实成功了但响应丢失"，会出现券已用而订单不存在。
         //   真实项目要靠 outbox 表或对账任务修；本项目不引入那套机制，但必须能答出这里的风险。
         if (dto.getCouponRecordId() != null) {
-            var useResult = couponClient.use(dto.getCouponRecordId(), userId, booking.getOrderNo());
+            Result<Boolean> useResult = couponClient.use(dto.getCouponRecordId(), userId, booking.getOrderNo());
             if (useResult.getCode() != 0 || !Boolean.TRUE.equals(useResult.getData())) {
                 log.error("优惠券核销失败，下单终止: userId={}, recordId={}, orderNo={}",
                         userId, dto.getCouponRecordId(), booking.getOrderNo());
@@ -155,15 +167,25 @@ public class BookingServiceImpl implements BookingService {
                         + (couponTitle == null ? "" : "（已用" + couponTitle + "）")
                         + "，请在 " + UNPAID_TIMEOUT_MINUTES + " 分钟内完成支付，超时将自动取消。");
 
-        log.info("购买订单已创建: orderNo={}, userId={}, courseId={}, storeId={}, payAmount={}",
-                booking.getOrderNo(), userId, course.getId(), course.getStoreId(), payAmount);
-        return toVO(booking);
+        log.info("购买订单已创建: orderNo={}, userId={}, courseId={}, storeId={}, 份数={}, payAmount={}",
+                booking.getOrderNo(), userId, course.getId(), course.getStoreId(), quantity, payAmount);
+        // 新建的单一定是 UNPAID，凭证要等付款后才出，所以这里传空列表（actions 只会给 PAY/CANCEL）
+        return toVO(booking, new ArrayList<>());
     }
 
     // =====================================================================
     // 支付与取消
     // =====================================================================
+    /**
+     * 模拟支付：CAS 流转状态 + <b>同事务出票</b>。
+     *
+     * <p>★为什么必须同事务：钱和权益是一件事的两面。分两个事务就会出现
+     * "钱已扣但凭证没生成"（用户付了钱约不了课）或"凭证生成了但钱没扣"（白送课）——
+     * 两者都是要写对账才能发现的问题，而一个本地事务就能彻底避免。
+     * 这里不需要分布式事务：订单与凭证<b>同在 yd_order 一个库</b>。</p>
+     */
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public void pay(Long userId, String orderNo) {
         // ===== 第 1 步：CAS 流转 UNPAID → PAID =====
         // 影响 0 行 = 状态不是 UNPAID（重复支付、或已被超时任务取消）。
@@ -173,14 +195,22 @@ public class BookingServiceImpl implements BookingService {
         }
 
         Booking booking = loadOwned(userId, orderNo);
-        log.info("支付成功: orderNo={}, userId={}, payAmount={}", orderNo, userId, booking.getPayAmount());
 
-        // ★凭证分支在这里接：为该单生成 quantity 张 t_entitlement，
-        //   valid_until 由 t_course_store 的可使用窗口算出。
-        //   目前"买完还没有可约的凭证"，属于分批交付的中间状态，不是漏写。
+        // ===== 第 2 步：出票（份数 = quantity，多份不合并，见 D4）=====
+        // 有效期由课程服务那边该门店的 valid_type 算：FOREVER→null / DAYS→付款起 N 天 / RANGE→固定截止
+        List<Entitlement> granted = entitlementService.grantForPaidOrder(booking);
+        log.info("支付成功: orderNo={}, userId={}, payAmount={}, 出票 {} 张",
+                orderNo, userId, booking.getPayAmount(), granted.size());
 
-        notifyPublisher.publishBookingNotify(userId, "支付成功",
-                "「" + booking.getCourseName() + "」已支付 ¥" + booking.getPayAmount() + "，可以开始预约教练了。");
+        // ===== 第 3 步：站内通知（文案要把"能约几次"说清楚，用户下一步就是去预约）=====
+        Entitlement first = granted.get(0);
+        String timesText = first.getTotalTimes() == null
+                ? "有效期内不限次预约"
+                : "共 " + granted.size() + " 张凭证、每张 " + first.getTotalTimes() + " 次";
+        notifyPublisher.publishBookingNotify(userId, "支付成功，凭证已生效",
+                "「" + booking.getCourseName() + "」已支付 ¥" + booking.getPayAmount() + "，"
+                        + timesText + "。只能在「" + booking.getStoreName() + "」约教练，"
+                        + (first.getValidUntil() == null ? "凭证长期有效。" : "请在到期前用完。"));
     }
 
     @Override
@@ -213,7 +243,7 @@ public class BookingServiceImpl implements BookingService {
             return;
         }
         try {
-            var refundResult = couponClient.refund(booking.getCouponRecordId());
+            Result<Boolean> refundResult = couponClient.refund(booking.getCouponRecordId());
             if (refundResult.getCode() != 0 || !Boolean.TRUE.equals(refundResult.getData())) {
                 log.error("退券未成功，需人工核对: orderNo={}, couponRecordId={}",
                         orderNo, booking.getCouponRecordId());
@@ -235,10 +265,24 @@ public class BookingServiceImpl implements BookingService {
                 .eq(Booking::getUserId, userId)
                 .eq(status != null && !status.isBlank() && !"ALL".equals(status), Booking::getStatus, status)
                 .orderByDesc(Booking::getId));
+        if (bookings.isEmpty()) {
+            return new ArrayList<>();
+        }
 
-        List<BookingVO> result = new ArrayList<>();
+        // ===== 一次 IN 批量取这批订单的凭证 =====
+        // ★绝不在循环里逐单查（10 行列表变 10 次查询）。凭证就在本库，
+        // 跨表但不跨服务，所以这里连 Feign 都没有
+        List<String> orderNos = new ArrayList<>(bookings.size());
         for (Booking booking : bookings) {
-            result.add(toVO(booking));
+            orderNos.add(booking.getOrderNo());
+        }
+        Map<String, List<Entitlement>> entitlementMap =
+                entitlementService.mapByOrderNos(userId, orderNos);
+
+        List<BookingVO> result = new ArrayList<>(bookings.size());
+        for (Booking booking : bookings) {
+            result.add(toVO(booking,
+                    entitlementMap.getOrDefault(booking.getOrderNo(), new ArrayList<>())));
         }
         return result;
     }
@@ -327,15 +371,41 @@ public class BookingServiceImpl implements BookingService {
         return "B" + System.currentTimeMillis() + ThreadLocalRandom.current().nextInt(100, 1000);
     }
 
-    /** 实体 → C 端 VO */
-    private BookingVO toVO(Booking booking) {
+    /**
+     * 实体 → C 端 VO。
+     *
+     * @param entitlements 该单的凭证列表（调用方批量取好传进来，本方法不查库）
+     */
+    private BookingVO toVO(Booking booking, List<Entitlement> entitlements) {
+        LocalDateTime now = LocalDateTime.now();
         List<String> actions = new ArrayList<>();
+        StringBuilder entitlementText = new StringBuilder();
+
         if (BookingStatus.UNPAID.equals(booking.getStatus())) {
+            // 待支付：能付、能撤，没有别的事可做
             actions.add("PAY");
             actions.add("CANCEL");
+        } else if (BookingStatus.PAID.equals(booking.getStatus())) {
+            // 凭证摘要："2 张凭证 · 可用 1 张"。★可用张数按"状态+次数+有效期"三条件算，
+            // 与预约页权益条用的是同一套判断（EntitlementService 里那一份），不另写一套
+            int usable = 0;
+            for (Entitlement entitlement : entitlements) {
+                if (isEntitlementUsable(entitlement, now)) {
+                    usable++;
+                }
+            }
+            entitlementText.append(entitlements.size()).append(" 张凭证 · 可用 ")
+                    .append(usable).append(" 张");
+            if (usable > 0) {
+                actions.add("BOOK");
+            }
+            // ★RATE（去评价）要再查 t_rating，在评价分支接入后补，
+            // 现在给出去会做出一个"点了说不能评"的按钮
+            actions.add("AGAIN");
+        } else {
+            // 已取消 / 已退款：只剩"再来一单"
+            actions.add("AGAIN");
         }
-        // ★BOOK（去约教练）与 RATE（去评价）要读凭证与评价数据（t_entitlement / t_rating），
-        //   在对应分支接入后再加；现在给出去只会做出点不动的按钮，比不给更糟
 
         return BookingVO.builder()
                 .orderNo(booking.getOrderNo())
@@ -354,15 +424,35 @@ public class BookingServiceImpl implements BookingService {
                 .payAmount(booking.getPayAmount())
                 .payAmountText(formatMoney(booking.getPayAmount()))
                 .originalAmountText(formatMoney(booking.getOriginalAmount()))
+                .discountAmountText(formatMoney(booking.getDiscountAmount()))
                 .couponTitle(booking.getCouponTitle())
                 .status(booking.getStatus())
                 .statusText(BookingStatus.textOf(booking.getStatus()))
                 .fromSeckill(booking.getActivityId() != null)
-                .createdAtText(formatTime(booking.getCreatedAt()))
-                .payTimeText(formatTime(booking.getPayTime()))
+                .createdText(formatTime(booking.getCreatedAt()))
+                .paidText(formatTime(booking.getPayTime()))
+                .refundText(formatTime(booking.getRefundAt()))
                 .cancelReason(booking.getCancelReason())
+                .entitlementText(entitlementText.toString())
+                .subTitle(booking.getParentNo() == null ? "" : "购物车合并下单")
                 .actions(actions)
                 .build();
+    }
+
+    /**
+     * 这张凭证现在还能不能用（决定列表要不要给 BOOK 按钮）。
+     * <p>与 {@code EntitlementServiceImpl} 里的同名判断保持三条件一致：
+     * ACTIVE + 有次数（或不限）+ 未过期（或永久）。★两处判断要一起改，
+     * 所以这一份只在本类算 actions 用，真正拦不拦由凭证服务在预约时判。</p>
+     */
+    private boolean isEntitlementUsable(Entitlement entitlement, LocalDateTime now) {
+        if (!"ACTIVE".equals(entitlement.getStatus())) {
+            return false;
+        }
+        int used = entitlement.getUsedTimes() == null ? 0 : entitlement.getUsedTimes();
+        boolean hasTimes = entitlement.getTotalTimes() == null || used < entitlement.getTotalTimes();
+        boolean inValid = entitlement.getValidUntil() == null || entitlement.getValidUntil().isAfter(now);
+        return hasTimes && inValid;
     }
 
     /** 实体 → 管理端 DTO（跨服务给 admin-server，含 userId 供聚合会员昵称） */

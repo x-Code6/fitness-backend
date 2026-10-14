@@ -339,6 +339,13 @@ public class CourseServiceImpl implements CourseService {
                 .storeId(storeId)
                 .storeName(storeName)
                 .onSale(onSale)
+                // ★第二层时间原样带给 order：它只负责"算出 valid_until"，不负责解释三种类型。
+                // 关系行缺失（课程没配到这家店）时全部给 null，由 order 侧按 FOREVER 之外的
+                // 保守分支处理——可售判断已经先把这种单子拦下了，这里只是不留 NPE 隐患
+                .validType(relation == null ? null : relation.getValidType())
+                .validDays(relation == null ? null : relation.getValidDays())
+                .useStartTime(relation == null ? null : relation.getUseStartTime())
+                .useEndTime(relation == null ? null : relation.getUseEndTime())
                 .build();
     }
 

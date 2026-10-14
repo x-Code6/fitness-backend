@@ -7,7 +7,7 @@ import java.math.BigDecimal;
 import java.util.List;
 
 /**
- * 订单视图对象（列表页与详情页共用）。
+ * 订单列表项视图（★字段名对齐前端 Mock 的 {@code bookingListItemVO}）。
  *
  * <p>★v2 的三个设计点：</p>
  * <ol>
@@ -16,12 +16,13 @@ import java.util.List;
  *       后端改文案前端永远慢一拍；只给文案则前端无法判断分支。</li>
  *   <li><b>金额同时给数值和展示串</b>：列表要比较/合计用数值，详情页要显示用字符串。
  *       只在后端格式化一次，不会出现三个页面三套小数位。</li>
- *   <li><b>{@code actions} 由后端算</b>：能不能支付/取消/评价/再次购买，
- *       取决于"订单状态 + 凭证状态 + 剩余次数 + 有效期"四个条件。
- *       前端重复实现这套规则，规则一改就要同步 N 个页面，是本项目最容易出问题的地方。
- *       这里先给出订单轴能单独决定的三个动作；
- *       <b>BOOK / RATE 需要凭证与评价数据，等凭证分支接上后再补</b>（不提前塞假值）。</li>
+ *   <li><b>{@code actions} 由后端算</b>：能不能支付/取消/去约/评价/再来一单，
+ *       取决于"订单状态 + 凭证状态 + 剩余次数 + 有没有评过"这套组合。
+ *       前端重复实现一遍就是四个出错点，规则一改要同步 N 个页面。</li>
  * </ol>
+ *
+ * <p>不给的字段：{@code tone}（徽章颜色，前端 {@code utils/constants.js} 已有映射表）、
+ * {@code coverColor}/{@code courseType}（数据在 yd_course，为两个装饰字段跨服务取数不值）。</p>
  */
 @Data
 @Builder
@@ -50,10 +51,10 @@ public class BookingVO {
     /** TIMES / UNLIMITED */
     private String saleType;
 
-    /** 这一单给几次（TIMES） */
+    /** 这一单给几次（TIMES）；UNLIMITED 为 null */
     private Integer timesGranted;
 
-    /** 买了几份 */
+    /** 买了几份 = 出了几张凭证 */
     private Integer quantity;
 
     private BigDecimal originalAmount;
@@ -69,6 +70,8 @@ public class BookingVO {
     /** 原价展示串，秒杀单要显示划线价 */
     private String originalAmountText;
 
+    private String discountAmountText;
+
     /** 用的哪张券；null = 没用券 */
     private String couponTitle;
 
@@ -80,17 +83,29 @@ public class BookingVO {
     private Boolean fromSeckill;
 
     /** 下单时间（后端已格式化，前端不解析时区） */
-    private String createdAtText;
+    private String createdText;
 
-    private String payTimeText;
+    private String paidText;
+
+    private String refundText;
 
     /** 取消原因，如"超时未支付，自动取消" */
     private String cancelReason;
 
     /**
-     * 可执行动作：{@code PAY / CANCEL / DELETE}。
-     * <p>★BOOK（去约教练）与 RATE（去评价）依赖凭证与评价数据，在后续分支接入；
-     * 现在塞进去会让前端做出点不动的按钮。</p>
+     * 凭证摘要，形如"2 张凭证 · 可用 1 张"。
+     * <p>★只有已支付的单才有值（没付款就没有凭证），其余给空串而不是 null，
+     * 前端可以直接渲染不用判空。</p>
+     */
+    private String entitlementText;
+
+    /** 副标题：购物车合并下单时给"购物车合并下单"，单买给空串 */
+    private String subTitle;
+
+    /**
+     * 可执行动作：{@code PAY / CANCEL / BOOK / RATE / AGAIN}。
+     * <p>★BOOK 依赖凭证数据（本服务同库，一次 IN 批量取，不在循环里查）；
+     * RATE 还要看有没有评过，在评价分支接入后补上。</p>
      */
     private List<String> actions;
 }
