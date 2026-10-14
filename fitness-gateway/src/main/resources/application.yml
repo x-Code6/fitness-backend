@@ -1,7 +1,7 @@
 # ============================================================
 # 网关配置（系统唯一对外入口）
 # 本期变更：① 路由补齐（coupon / message 两个已实现但没路由的接口）
-#           ② 社区路由下线（演进设计 D20）
+#           ② 社区路由重新上线（演进设计 4.12 推翻 D20），白名单只放四条只读口
 #           ③ 秒杀列表单独一条路由（它和抢课接口分属两个服务）
 #           ④ 白名单改成真正的 Ant 风格 glob（配合代码里换掉的 AntPathMatcher）
 #           ⑤ 新增 Redis 连接与 token-check-enabled（jti 令牌白名单）
@@ -89,14 +89,14 @@ spring:
           filters:
             - StripPrefix=1
 
-        # 社区域本轮下线（演进设计 D20：不建 yd_community、不放路由、前端入口隐藏）。
-        # fitness-community 模块代码与 pom 保留，恢复时把这段注释解开并补建库脚本即可。
-        #        - id: community
-        #          uri: lb://fitness-community
-        #          predicates:
-        #            - Path=/api/community/**
-        #          filters:
-        #            - StripPrefix=1
+        # 社区域重新上线（演进设计 4.12，推翻 D20）。
+        # 建库脚本 sql/07_yd_community.sql 必须一起执行，否则服务起来就是"表不存在"。
+        - id: community
+          uri: lb://fitness-community
+          predicates:
+            - Path=/api/community/**
+          filters:
+            - StripPrefix=1
 
         - id: admin
           uri: lb://fitness-admin-server
@@ -140,6 +140,18 @@ auth:
     - /api/video/detail
     - /api/behavior/report      # 埋点上报允许匿名（服务内用 deviceId 区分未登录用户）
     - /api/behavior/hot/courses # 首页热度推荐，游客也要能看
+
+    # ---- 社区：只放行"读公开内容"的四条 ----
+    # ★放行的只是"能进这个方法"，不是"能看到所有内容"：服务层每条口都对 userId==null 做了分支
+    #   （feed 只出 PUBLIC 池、detail/comments/replies 遇到 FRIEND/PRIVATE 直接 46004 拒），
+    #   两道闸门各管各的，少一道都会出事：只靠网关，服务内换个调用方就绕过；
+    #   只靠服务层，游客连请求都进不来，"游客可浏览"这个产品行为就没了。
+    # ★没有放 /api/community/author：主页在产品设计里是登录后的行为，
+    #   而且它会被人用来批量扒某个用户发过什么——匿名放行它等于开放一个爬取入口。
+    - /api/community/feed
+    - /api/community/detail
+    - /api/community/comments
+    - /api/community/replies
 
     # ---- 管理端：admin-server 自己有验证码 + JWT，网关这里只放行它的登录链路 ----
     # 只列这两个，是因为 AuthAdminController 实际只有 /captcha 与 /login 两个方法

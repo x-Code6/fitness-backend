@@ -43,7 +43,7 @@
             <artifactId>mysql-connector-j</artifactId>
             <scope>runtime</scope>
         </dependency>
-        <!-- Redis：Feed 推模式收件箱 / 关注集合（SINTER） -->
+        <!-- Redis：Feed 推模式收件箱 / 浏览增量与浏览去重 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-redis</artifactId>
@@ -51,6 +51,11 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-amqp</artifactId>
+        </dependency>
+        <!-- spring-kafka：浏览明细复用 behavior 那条 topic（docs 4.12 K1，不新建 topic） -->
+        <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            <artifactId>spring-kafka</artifactId>
         </dependency>
         <dependency>
             <groupId>com.yuedong</groupId>
