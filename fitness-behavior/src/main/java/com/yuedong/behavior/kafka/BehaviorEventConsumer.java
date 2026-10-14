@@ -57,6 +57,10 @@ public class BehaviorEventConsumer {
                     : Long.valueOf(String.valueOf(event.get("userId"))));
             logRow.setClientTs(event.get("ts") == null ? null
                     : Long.valueOf(String.valueOf(event.get("ts"))));
+            // ★props 在这里重新序列化成 JSON 字符串落库（库里那一列是 JSON 类型）。
+            // 不映射成 Map 的理由见 BehaviorLog#props 的注释：这一列只写不读
+            Object props = event.get("props");
+            logRow.setProps(props == null ? null : objectMapper.writeValueAsString(props));
             logRow.setCreatedAt(java.time.LocalDateTime.now());
             behaviorLogMapper.insert(logRow);
 

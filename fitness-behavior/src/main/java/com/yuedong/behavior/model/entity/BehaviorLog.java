@@ -46,6 +46,20 @@ public class BehaviorLog {
     @TableField("client_ts")
     private Long clientTs;
 
+    /**
+     * 事件扩展属性。库里是 JSON 类型，这里存<b>序列化之后的字符串</b>。
+     *
+     * <p>★为什么不映射成 Map：MyBatis 要 JSON ↔ Map 就得配 TypeHandler，
+     * 而这个字段<b>全项目只写不读</b>（分析时由 SQL 的 JSON 函数直接取键，应用层不参与）。
+     * 为一个没人读的字段加一层转换器，换来的只是"看起来干净"。</p>
+     *
+     * <p>★v1 的架构文档写了这一列但整条链路没实现——事件进库后只剩类型和 id，
+     * "用户是从首页哪个 banner 点进来的"这类问题从此回答不了。
+     * v2 把整条补全：前端 SDK 传 props → 生产者放进 Kafka 消息 → 消费者序列化落库。</p>
+     */
+    @TableField("props")
+    private String props;
+
     /** 入库时间 */
     @TableField("created_at")
     private LocalDateTime createdAt;

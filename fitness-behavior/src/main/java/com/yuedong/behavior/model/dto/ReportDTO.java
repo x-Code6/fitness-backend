@@ -4,9 +4,11 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Size;
 import lombok.Data;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 埋点批量上报请求（前端 SDK 攒批：满 5 条或每 3 秒上报一次）。
@@ -18,9 +20,10 @@ public class ReportDTO {
     @NotBlank(message = "deviceId 不能为空")
     private String deviceId;
 
-    /** 事件列表（1~20 条） */
+    /** 事件列表（1~20 条）。★上限必须写：这是匿名可调的埋点口，没有上限就变成 DDOS 放大器 */
     @Valid
     @NotEmpty(message = "events 不能为空")
+    @Size(max = 20, message = "单次最多上报 20 条事件")
     private List<Event> events;
 
     /**
@@ -44,5 +47,13 @@ public class ReportDTO {
 
         /** 客户端时间戳（毫秒） */
         private Long ts;
+        /**
+         * 事件扩展属性，例 {@code {"from":"home_banner","tab":"燃脂"}}。
+         * <p>★不校验内容、不限键名：埋点的价值恰恰在于属性会随业务加，
+         *   每次加一个来源标记都要改后端校验就没人愿意埋点了。
+         *   限制放在<b>体积</b>上：整批 20 条、单条 props 原样转 JSON 落库，
+         *   真正的护栏是埋点接口在网关侧的限流（本期未做，见 docs 附 C）。</p>
+         */
+        private Map<String, Object> props;
     }
 }
