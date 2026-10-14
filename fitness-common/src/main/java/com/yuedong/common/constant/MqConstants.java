@@ -40,6 +40,17 @@ public final class MqConstants {
     /** 秒杀死信路由键 */
     public static final String ORDER_DLQ_KEY = "order.dlq";
 
+    /**
+     * 延迟取消队列的死信队列（P0-10）。
+     * <p>★为什么每条业务队列都要有自己的 DLQ 而不是共用一个：
+     * 死信里要能看出"它是哪条链路进来的"，共用一个就得靠消息体反解，
+     * 而进死信的原因常常正是消息体坏了。</p>
+     */
+    public static final String ORDER_TIMEOUT_DLQ = "q.order.timeout.dlq";
+
+    /** 延迟取消死信路由键 */
+    public static final String ORDER_TIMEOUT_DLQ_KEY = "order.timeout.dlq";
+
     // ==================== RabbitMQ：跨服务事件（course → point） ====================
 
     /** 完课事件交换机（direct） */

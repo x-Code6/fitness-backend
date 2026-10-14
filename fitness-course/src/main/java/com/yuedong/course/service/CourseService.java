@@ -103,8 +103,8 @@ public interface CourseService {
      *
      * <p>★新增关系时用<b>默认时间窗</b>：开售=此刻、停售=长期、有效期=领后 30 天。
      * 因为 {@code sell_start_time} 是 NOT NULL，留空会让这条关系永远判为"不可售"，
-     * 而这种"配了门店却没生效"的问题最难查。两层时间的精细配置由独立接口负责（本期未做，
-     * 管理端表单也还没有这一格）。</p>
+     * 而这种"配了门店却没生效"的问题最难查。两层时间的精细配置由下面的
+     * {@link #adminWindowPage} / {@link #adminWindowSave} 负责（切片 L 已落地）。</p>
      *
      * @param storeIds 门店 id 列表；空集合表示下架全部门店（课相当于是不可购买状态）
      */
