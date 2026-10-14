@@ -97,6 +97,8 @@ public class CourseServiceImpl implements CourseService {
     private final SeckillActivityMapper seckillActivityMapper;
     /** 规则文案工厂（D21 策略模式）。文案只在这一处产出，列表/详情/时段页都从这里取 */
     private final com.yuedong.course.rule.RuleDescribeFactory ruleDescribeFactory;
+    /** 评分统计来自 order 域（评价明细与汇总都在 yd_order）。只读，取不到就显示"暂无评分" */
+    private final com.yuedong.order.api.client.RatingClient ratingClient;
     private final StringRedisTemplate redis;
     private final RedissonClient redisson;
     private final ObjectMapper objectMapper;
@@ -146,6 +148,8 @@ public class CourseServiceImpl implements CourseService {
             result.add(toVO(course, activityMap.get(course.getId()),
                     storeCountMap.getOrDefault(course.getId(), 0)));
         }
+        // 评分不进上面的组装、单独一次批量取：见 fillCourseRatings 的注释
+        fillCourseRatings(result);
         return result;
     }
 
@@ -289,7 +293,15 @@ public class CourseServiceImpl implements CourseService {
      * 所以在这里 set 不会污染缓存内容。</p>
      */
     private CourseVO withStoreContext(CourseVO vo, Long storeId) {
-        if (vo == null || storeId == null) {
+        if (vo == null) {
+            return vo;
+        }
+        // ★评分在缓存之外填：课程详情整体缓存 30 分钟，
+        // 但"4.8 分 / 12 条"是新评价一进来就该变的数，塞进缓存就会出现"评了却看不见"。
+        // 所以缓存里<b>永远不含评分</b>，每次响应前单独取一次（一次批量 RPC，不是每条一次）
+        fillCourseRatings(List.of(vo));
+
+        if (storeId == null) {
             return vo;
         }
         // 三表同库 JOIN 数教练：命中 t_coach_course.idx_course 与 t_coach.uk_store_name 前缀
@@ -822,6 +834,48 @@ public class CourseServiceImpl implements CourseService {
                 .validDays(relation == null ? null : relation.getValidDays())
                 .useEndTime(relation == null ? null : relation.getUseEndTime())
                 .build();
+    }
+
+    /**
+     * 批量填评分摘要。
+     *
+     * <p>★一次 RPC 拿一页的分数，<b>绝不在循环里逐门课调 Feign</b>
+     * （那是 N+1 的网络版，比循环查库更贵：每次都是一整套 HTTP 往返）。</p>
+     *
+     * <p>取不到时只打 warn、字段留 null，<b>不让评分拖垮列表</b>：
+     * 课程列表是这个 App 的门面，order 服务抖一下就让首页开不了是本末倒置。
+     * null 在前端渲染成"暂无评分"，和"0 分"是两件事。</p>
+     */
+    private void fillCourseRatings(List<CourseVO> vos) {
+        if (vos == null || vos.isEmpty()) {
+            return;
+        }
+        List<Long> ids = new ArrayList<>();
+        for (CourseVO vo : vos) {
+            if (vo.getId() != null && !ids.contains(vo.getId())) {
+                ids.add(vo.getId());
+            }
+        }
+        try {
+            com.yuedong.common.result.Result<List<com.yuedong.order.api.dto.RatingStatsDTO>> result =
+                    ratingClient.stats("COURSE", ids);
+            if (result.getCode() != 0 || result.getData() == null) {
+                return;
+            }
+            Map<Long, com.yuedong.order.api.dto.RatingStatsDTO> statsMap = new HashMap<>();
+            for (com.yuedong.order.api.dto.RatingStatsDTO stat : result.getData()) {
+                statsMap.put(stat.getTargetId(), stat);
+            }
+            for (CourseVO vo : vos) {
+                com.yuedong.order.api.dto.RatingStatsDTO stat = statsMap.get(vo.getId());
+                if (stat != null) {
+                    vo.setRatingText(stat.getAvgText());
+                    vo.setRatingCount(stat.getRatingCount());
+                }
+            }
+        } catch (Exception e) {
+            log.warn("取课程评分失败，列表按\"暂无评分\"渲染: ids={}", ids, e);
+        }
     }
 
     /** lessonHours 兜底：不在 1~3 内一律按 1。★表单是下拉框，正常不会走到这里 */

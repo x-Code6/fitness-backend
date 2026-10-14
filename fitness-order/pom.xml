@@ -79,6 +79,13 @@
             <artifactId>fitness-course-api</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <!-- 消费 user 服务的 Feign 契约：评价列表要显示昵称与头像配色（跨库 + 高频读，
+             但只有"显示"用途，所以只在读侧调，写侧一律用订单里已有的快照） -->
+        <dependency>
+            <groupId>com.yuedong</groupId>
+            <artifactId>fitness-user-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
     </dependencies>
 
     <build>

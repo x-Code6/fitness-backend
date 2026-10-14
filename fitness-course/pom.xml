@@ -61,6 +61,15 @@
             <artifactId>fitness-course-api</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <!-- 消费 order 服务的评分统计契约：门店/课程卡片的"4.8 分 · 12 条"来自那里。
+             ★评价明细与汇总统计都在 yd_order（写侧要和订单同库、同事务才不需要分布式事务），
+             课程侧只读批量取，方向是 course → order 的只读调用，与 order → course 的
+             下单校验不冲突（两边依赖的都是 *-api 契约模块，不是对方应用模块，Maven 不成环） -->
+        <dependency>
+            <groupId>com.yuedong</groupId>
+            <artifactId>fitness-order-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
     </dependencies>
 
     <build>

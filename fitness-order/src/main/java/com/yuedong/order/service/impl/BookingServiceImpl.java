@@ -82,6 +82,7 @@ public class BookingServiceImpl implements BookingService {
     private final NotifyPublisher notifyPublisher;
     private final ObjectMapper objectMapper;
     private final EntitlementService entitlementService;
+    private final com.yuedong.order.service.RatingService ratingService;
 
     // =====================================================================
     // 创建订单
@@ -366,6 +367,9 @@ public class BookingServiceImpl implements BookingService {
         Map<String, List<Entitlement>> entitlementMap =
                 entitlementService.mapByOrderNos(userId, orderNos);
         Set<String> bookedOrderNos = loadBookedOrderNos(userId, orderNos);
+        // 只有"待评价"这个 tab 需要知道哪些单评过，别的情况不去多问一次
+        Set<String> ratedOrderNos = "TO_RATE".equals(normalized)
+                ? ratingService.ratedOrderNos(userId, orderNos) : new HashSet<>();
 
         // ===== 第 3 步：按 tab 做跨轴后筛 =====
         LocalDateTime now = LocalDateTime.now();
@@ -374,7 +378,7 @@ public class BookingServiceImpl implements BookingService {
             List<Entitlement> entitlements =
                     entitlementMap.getOrDefault(booking.getOrderNo(), new ArrayList<>());
 
-            if (!matchTab(normalized, booking, entitlements, bookedOrderNos, now)) {
+            if (!matchTab(normalized, booking, entitlements, bookedOrderNos, ratedOrderNos)) {
                 continue;
             }
             result.add(toVO(booking, entitlements));
@@ -390,19 +394,18 @@ public class BookingServiceImpl implements BookingService {
      * 要看当前状态、"核销"也要改状态，规则绕成一团。</p>
      */
     private boolean matchTab(String tab, Booking booking, List<Entitlement> entitlements,
-                             Set<String> bookedOrderNos, LocalDateTime now) {
+                             Set<String> bookedOrderNos, Set<String> ratedOrderNos) {
         switch (tab) {
             case "WAIT_USE":
-                return hasUsable(entitlements, now);
+                return hasUsable(entitlements, LocalDateTime.now());
             case "BOOKED":
                 return bookedOrderNos.contains(booking.getOrderNo());
             case "FINISHED":
                 return allSettled(entitlements);
             case "TO_RATE":
-                // ★口径（已确认）：凭证全部用完或过期之后才能评价。
-                // "已经评过的不再出现在待评价"还要读 t_rating，在评价切片接上；
-                // 在那之前这个 tab 会包含评过的单，功能不阻断，只是列表偏长一点
-                return allSettled(entitlements);
+                // ★口径（已确认）：凭证全部用完或过期之后才可评，且这单还没评过。
+                // 少掉后半个条件，"待评价"会把评过的单一直挂在角标上，数字永远降不下去
+                return allSettled(entitlements) && !ratedOrderNos.contains(booking.getOrderNo());
             case "EXPIRED":
                 // 两个来源：订单被退款了，或者凭证里有已过期的
                 if (BookingStatus.REFUNDED.equals(booking.getStatus())) {
@@ -521,6 +524,9 @@ public class BookingServiceImpl implements BookingService {
         }
 
         LocalDateTime now = LocalDateTime.now();
+        // 详情页要显示"评过没有"，一次单条查询即可（这张单的 rating 最多一条）
+        boolean rated = !ratingService
+                .ratedOrderNos(userId, List.of(orderNo)).isEmpty();
         List<String> actions = new ArrayList<>();
         if (BookingStatus.UNPAID.equals(booking.getStatus())) {
             actions.add("PAY");
@@ -529,9 +535,9 @@ public class BookingServiceImpl implements BookingService {
             if (hasUsable(entitlements, now)) {
                 actions.add("BOOK");
             }
-            // ★RATE 的条件比列表严：要"凭证全部结束"才可评（已确认口径），
-            // 再叠加"没评过"要读 t_rating，在评价切片接上
-            if (allSettled(entitlements)) {
+            // ★RATE 两个条件：凭证全部结束 <b>且</b> 还没评过。
+            // 评过的单再给一个 RATE 按钮，点进去提交只会得到"本单已评价过"
+            if (allSettled(entitlements) && !rated) {
                 actions.add("RATE");
             }
             actions.add("AGAIN");
@@ -577,8 +583,7 @@ public class BookingServiceImpl implements BookingService {
                 .refundText(formatTime(booking.getRefundAt()))
                 .cancelReason(booking.getCancelReason())
                 .entitlements(entitlementVOs)
-                // ★评过没评过要读 t_rating，在评价切片接入；现在统一给 false
-                .rated(false)
+                .rated(rated)
                 .actions(actions)
                 .build();
     }
