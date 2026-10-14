@@ -150,6 +150,7 @@ CREATE TABLE IF NOT EXISTS t_coach_course (
 CREATE TABLE IF NOT EXISTS t_seckill_activity (
     id            BIGINT        NOT NULL AUTO_INCREMENT COMMENT '主键',
     course_id     BIGINT        NOT NULL COMMENT '秒杀哪门课（只能选 course_kind=SALE 的课）',
+    store_id      BIGINT        NOT NULL COMMENT '★哪家店的专场。这一列是实现时才补上的：秒杀建单要写 store_id（凭证认店，之后只能在该店约教练），而"店"该由活动定义而不是让用户抢的时候再选——否则抢到的价格对应哪家店根本说不清',
     seckill_price DECIMAL(10,2) NOT NULL COMMENT '秒杀价，与 t_course.price 并存 → 订单要展示划线原价',
     total         INT           NOT NULL COMMENT '总名额=可卖出多少份权益（不是座位数）',
     remain        INT           NOT NULL COMMENT 'DB 侧剩余份数（账本）。Redis 侧 seckill:stock 是抢的依据，两份并存见 docs 第一部分讲解⑧',
@@ -162,7 +163,9 @@ CREATE TABLE IF NOT EXISTS t_seckill_activity (
     PRIMARY KEY (id),
     -- 定时任务每 30 分钟扫"待开始 + 进行中"，靠这个索引
     KEY idx_status_start (status, start_time),
-    KEY idx_course (course_id)
+    KEY idx_course (course_id),
+    -- 「这家店当前有哪些秒杀专场」：秒杀页按门店筛选走这条
+    KEY idx_store_status (store_id, status)
 ) ENGINE = InnoDB COMMENT '秒杀活动表';
 
 -- ----------------------------------------------------------------
@@ -366,13 +369,13 @@ INSERT INTO t_coach_course (coach_id, course_id) VALUES
 (8, 5), (8, 10);
 
 -- 秒杀活动：三种状态都有，专门用来验证定时发放的两条分支
-INSERT INTO t_seckill_activity (id, course_id, seckill_price, total, remain, start_time, end_time, status) VALUES
--- ① 还没到点：演示"30 分钟后由扫描任务预热并翻状态"
-(1, 4, 19.90, 30, 30, NOW() + INTERVAL 3 MINUTE, NOW() + INTERVAL 3 DAY, 0),
+INSERT INTO t_seckill_activity (id, course_id, store_id, seckill_price, total, remain, start_time, end_time, status) VALUES
+-- ① 还没到点：演示"由扫描任务预热并翻状态"
+(1, 4, 3, 19.90, 30, 30, NOW() + INTERVAL 3 MINUTE, NOW() + INTERVAL 3 DAY, 0),
 -- ② 开始时间已过去但状态还是 0：演示你担心的那个边界——扫描时已过点，就【直接补发，不再投延迟消息】
-(2, 1, 29.90, 30, 30, NOW() - INTERVAL 2 HOUR,   NOW() + INTERVAL 5 DAY, 0),
+(2, 1, 1, 29.90, 30, 30, NOW() - INTERVAL 2 HOUR,   NOW() + INTERVAL 5 DAY, 0),
 -- ③ 进行中且已售罄：演示"库存为 0 时 Lua 返回 SOLD_OUT"
-(3, 2, 39.90, 20, 0,  NOW() - INTERVAL 3 DAY,    NOW() + INTERVAL 8 DAY, 1);
+(3, 2, 1, 39.90, 20, 0,  NOW() - INTERVAL 3 DAY,    NOW() + INTERVAL 8 DAY, 1);
 
 -- 视频：url 用公开测试片源，你换成自己可访问的地址即可（视频不做上传，直接存链接）
 INSERT INTO t_video (id, course_id, coach_id, title, intro, level, duration, calories, plays, url, sort_no, status) VALUES
