@@ -10,6 +10,7 @@ import com.yuedong.common.result.ErrorCode;
 import com.yuedong.course.api.dto.CourseAdminDTO;
 import com.yuedong.course.api.dto.CourseDTO;
 import com.yuedong.course.api.dto.CourseSaveDTO;
+import com.yuedong.course.api.dto.CourseStoreKeyDTO;
 import com.yuedong.course.cache.CacheWrapper;
 import com.yuedong.course.mapper.CoachMapper;
 import com.yuedong.course.mapper.CourseMapper;
@@ -21,6 +22,8 @@ import com.yuedong.course.model.entity.CourseStore;
 import com.yuedong.course.model.entity.SeckillActivity;
 import com.yuedong.course.model.entity.Store;
 import com.yuedong.course.model.vo.CourseVO;
+import com.yuedong.course.rule.RuleContext;
+import com.yuedong.course.rule.RuleDescribeFactory;
 import com.yuedong.course.service.CourseService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -330,25 +333,100 @@ public class CourseServiceImpl implements CourseService {
 
         // 门店关系从 t_course_store 取（旧库的 store_id/store_name 已删）
         CourseStore relation = null;
-        String storeName = null;
+        Store store = null;
         if (storeId != null) {
             relation = courseStoreMapper.selectOne(new LambdaQueryWrapper<CourseStore>()
                     .eq(CourseStore::getCourseId, courseId)
                     .eq(CourseStore::getStoreId, storeId)
                     .eq(CourseStore::getStatus, 1));
             if (relation != null) {
-                // 查门店名：WHERE id=? 命中主键。★这是"订单要存门店快照"的数据来源，
-                // 不参与任何并发判断
-                Store store = storeMapper.selectById(storeId);
-                storeName = store == null ? null : store.getName();
+                // 查门店：主键一条。★门店名要进订单快照，营业时间给批量版算可约区间用
+                store = storeMapper.selectById(storeId);
             }
         }
 
-        // 可售窗口判断：在卖 且 未过停售时间（sellEndTime 为 null 表示长期在售）
+        // 可售判断、第二层时间、规则文案全部交给 assemble()：
+        // ★单条版与批量版共用一份组装口径，两边不会出现"一个算在卖一个算不在"的分叉
+        return assemble(course, relation, store, storeId, LocalDateTime.now());
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>★批量版本<b>不抛"课程不存在"</b>：购物车里出现一门课被下架是正常现象，
+     * 正确表现是"该条目显示已下架、不能勾选结算"，而不是让整个购物车页面打不开。
+     * 单条版（建单前校验）恰恰相反——它必须硬失败，不能让用户买到下架的课。
+     * <b>同一个数据在两条链路上的容错要求是相反的，所以是两个方法而不是一个加布尔参数。</b></p>
+     */
+    @Override
+    public List<CourseDTO> getBatchDetail(List<CourseStoreKeyDTO> keys) {
+        List<CourseDTO> result = new ArrayList<>();
+        if (keys == null || keys.isEmpty()) {
+            return result;
+        }
+
+        // ===== 第 1 步：把两批 id 去重出来 =====
+        List<Long> courseIds = new ArrayList<>();
+        List<Long> storeIds = new ArrayList<>();
+        for (CourseStoreKeyDTO key : keys) {
+            if (key.getCourseId() != null && !courseIds.contains(key.getCourseId())) {
+                courseIds.add(key.getCourseId());
+            }
+            if (key.getStoreId() != null && !storeIds.contains(key.getStoreId())) {
+                storeIds.add(key.getStoreId());
+            }
+        }
+
+        // ===== 第 2 步：三条 SQL 拿全（课程、关系、门店），★不是每对一次查询 =====
+        Map<Long, Course> courseMap = new HashMap<>();
+        if (!courseIds.isEmpty()) {
+            for (Course course : courseMapper.selectBatchIds(courseIds)) {
+                courseMap.put(course.getId(), course);
+            }
+        }
+        Map<String, CourseStore> relationMap = new HashMap<>();
+        if (!courseIds.isEmpty() && !storeIds.isEmpty()) {
+            List<CourseStore> relations = courseStoreMapper.selectList(new LambdaQueryWrapper<CourseStore>()
+                    .in(CourseStore::getCourseId, courseIds)
+                    .in(CourseStore::getStoreId, storeIds));
+            for (CourseStore relation : relations) {
+                relationMap.put(relation.getCourseId() + "_" + relation.getStoreId(), relation);
+            }
+        }
+        Map<Long, Store> storeMap = new HashMap<>();
+        if (!storeIds.isEmpty()) {
+            for (Store store : storeMapper.selectBatchIds(storeIds)) {
+                storeMap.put(store.getId(), store);
+            }
+        }
+
+        // ===== 第 3 步：按入参顺序组装，查不到的直接跳过（调用方按缺失判"已下架"）=====
         LocalDateTime now = LocalDateTime.now();
-        boolean onSale = relation != null
+        for (CourseStoreKeyDTO key : keys) {
+            Course course = courseMap.get(key.getCourseId());
+            if (course == null) {
+                continue;
+            }
+            CourseStore relation = relationMap.get(key.getCourseId() + "_" + key.getStoreId());
+            result.add(assemble(course, relation, storeMap.get(key.getStoreId()),
+                    key.getStoreId(), now));
+        }
+        return result;
+    }
+
+    /**
+     * 把"课程 + 该店关系行 + 门店"拼成跨服务快照。
+     * <p>★单条与批量共用这一份组装，可售判断与规则文案的口径才不会分叉。</p>
+     */
+    private CourseDTO assemble(Course course, CourseStore relation, Store store,
+                               Long storeId, LocalDateTime now) {
+        boolean onSale = course.getStatus() != null && course.getStatus() == 1
+                && relation != null && relation.getStatus() != null && relation.getStatus() == 1
                 && relation.getSellStartTime() != null && !relation.getSellStartTime().isAfter(now)
                 && (relation.getSellEndTime() == null || !relation.getSellEndTime().isBefore(now));
+
+        String scene = ruleDescribeFactory.courseSceneOf(course.getCourseKind(), course.getSaleType());
+        RuleContext ruleContext = buildRuleContext(course, relation);
 
         return CourseDTO.builder()
                 .id(course.getId())
@@ -357,28 +435,20 @@ public class CourseServiceImpl implements CourseService {
                 .type(course.getType())
                 .lessonHours(course.getLessonHours())
                 .saleType(course.getSaleType())
+                .coverColor(course.getCoverColor())
                 .timesPerBuy(course.getTimesPerBuy())
                 .duration(course.getDuration())
                 .calories(course.getCalories())
                 .price(course.getPrice())
                 .storeId(storeId)
-                .storeName(storeName)
+                .storeName(store == null ? null : store.getName())
                 .onSale(onSale)
-                // ★第二层时间原样带给 order：它只负责"算出 valid_until"，不负责解释三种类型。
-                // 关系行缺失（课程没配到这家店）时全部给 null，由 order 侧按 FOREVER 之外的
-                // 保守分支处理——可售判断已经先把这种单子拦下了，这里只是不留 NPE 隐患
                 .validType(relation == null ? null : relation.getValidType())
                 .validDays(relation == null ? null : relation.getValidDays())
                 .useStartTime(relation == null ? null : relation.getUseStartTime())
                 .useEndTime(relation == null ? null : relation.getUseEndTime())
-                // ★规则文案随快照带出：时段页要显示同一套话，
-                // 让 order 再写一遍就会出现两处文案不一致（改一处忘另一处）
-                .ruleTexts(ruleDescribeFactory.describe(
-                        ruleDescribeFactory.courseSceneOf(course.getCourseKind(), course.getSaleType()),
-                        buildRuleContext(course, relation)))
-                .ruleSummary(ruleDescribeFactory.summary(
-                        ruleDescribeFactory.courseSceneOf(course.getCourseKind(), course.getSaleType()),
-                        buildRuleContext(course, relation)))
+                .ruleTexts(ruleDescribeFactory.describe(scene, ruleContext))
+                .ruleSummary(ruleDescribeFactory.summary(scene, ruleContext))
                 .build();
     }
 

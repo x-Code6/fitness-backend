@@ -5,6 +5,7 @@ import com.yuedong.common.result.Result;
 import com.yuedong.course.api.dto.CourseAdminDTO;
 import com.yuedong.course.api.dto.CourseDTO;
 import com.yuedong.course.api.dto.CourseSaveDTO;
+import com.yuedong.course.api.dto.CourseStoreKeyDTO;
 import com.yuedong.course.api.dto.SeckillActiveDTO;
 import com.yuedong.course.service.CourseService;
 import com.yuedong.course.service.SeckillActivityService;
@@ -52,6 +53,16 @@ public class InnerCourseController {
     @GetMapping("/detail")
     public Result<CourseDTO> detail(@RequestParam Long courseId, @RequestParam Long storeId) {
         return Result.ok(courseService.getInnerDetail(courseId, storeId));
+    }
+
+    /**
+     * 批量课程快照（order 的购物车用）。
+     * <p>★传的是"课 × 店"的<b>对</b>而不是两个列表：同一门课在不同店的价格窗口与可售状态不同，
+     * 拆成两个集合就得在服务端做笛卡尔积再筛，语义会丢。</p>
+     */
+    @PostMapping("/batch-detail")
+    public Result<List<CourseDTO>> batchDetail(@RequestBody List<CourseStoreKeyDTO> keys) {
+        return Result.ok(courseService.getBatchDetail(keys));
     }
 
     /** 查课程进行中的秒杀活动；无活动时 data=null */

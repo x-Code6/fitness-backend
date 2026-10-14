@@ -10,16 +10,24 @@ import com.yuedong.common.result.ErrorCode;
 import com.yuedong.common.result.Result;
 import com.yuedong.course.api.client.CouponClient;
 import com.yuedong.course.api.client.CourseClient;
+import com.yuedong.course.api.client.StoreClient;
 import com.yuedong.course.api.dto.CouponUsableDTO;
 import com.yuedong.course.api.dto.CourseDTO;
+import com.yuedong.course.api.dto.StoreDTO;
 import com.yuedong.order.api.dto.BookingDTO;
 import com.yuedong.order.constant.BookingStatus;
+import com.yuedong.order.constant.EntitlementStatus;
 import com.yuedong.order.constant.OrderConstants;
+import com.yuedong.order.constant.ReservationStatus;
 import com.yuedong.order.mapper.BookingMapper;
+import com.yuedong.order.mapper.ReservationMapper;
 import com.yuedong.order.model.dto.BookingCreateDTO;
 import com.yuedong.order.model.entity.Booking;
 import com.yuedong.order.model.entity.Entitlement;
+import com.yuedong.order.model.entity.Reservation;
+import com.yuedong.order.model.vo.BookingDetailVO;
 import com.yuedong.order.model.vo.BookingVO;
+import com.yuedong.order.model.vo.EntitlementVO;
 import com.yuedong.order.mq.NotifyPublisher;
 import com.yuedong.order.mq.message.OrderTimeoutMessage;
 import com.yuedong.order.service.BookingService;
@@ -35,8 +43,10 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
 
 /**
@@ -64,8 +74,10 @@ public class BookingServiceImpl implements BookingService {
     private static final DateTimeFormatter TIME_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
 
     private final BookingMapper bookingMapper;
+    private final ReservationMapper reservationMapper;
     private final CourseClient courseClient;
     private final CouponClient couponClient;
+    private final StoreClient storeClient;
     private final RabbitTemplate rabbitTemplate;
     private final NotifyPublisher notifyPublisher;
     private final ObjectMapper objectMapper;
@@ -76,6 +88,12 @@ public class BookingServiceImpl implements BookingService {
     // =====================================================================
     @Override
     public BookingVO create(Long userId, BookingCreateDTO dto) {
+        // 单买：不属于任何组
+        return create(userId, dto, null);
+    }
+
+    @Override
+    public BookingVO create(Long userId, BookingCreateDTO dto, String parentNo) {
         // ===== 第 1 步：查课程快照（Feign 只读，不写远端任何东西）=====
         // 一次调用同时拿到课程字段、门店名与该店的可售状态，避免"查课程 + 再查门店"两次 RPC
         Result<CourseDTO> detailResult = courseClient.detail(dto.getCourseId(), dto.getStoreId());
@@ -123,6 +141,8 @@ public class BookingServiceImpl implements BookingService {
         // ===== 第 4 步：建单（一次本地 insert，无跨服务写，所以没有 try/补偿）=====
         Booking booking = new Booking();
         booking.setOrderNo(genOrderNo());
+        // 组号只在购物车结算时有值（由 CartServiceImpl 传入，不来自请求体）
+        booking.setParentNo(parentNo);
         booking.setUserId(userId);
         booking.setCourseId(course.getId());
         booking.setCourseKind(course.getCourseKind());
@@ -184,40 +204,64 @@ public class BookingServiceImpl implements BookingService {
      *
      * <p>★为什么必须同事务：钱和权益是一件事的两面。分两个事务就会出现
      * "钱已扣但凭证没生成"（用户付了钱约不了课）或"凭证生成了但钱没扣"（白送课）——
-     * 两者都是要写对账才能发现的问题，而一个本地事务就能彻底避免。
-     * 这里不需要分布式事务：订单与凭证<b>同在 yd_order 一个库</b>。</p>
+     * 两者都要靠对账才发现。这里不需要分布式事务：订单与凭证<b>同在 yd_order 一个库</b>。</p>
+     *
+     * <p>★整组支付用一条 UPDATE 而不是循环调单笔：循环里第 3 张失败时前 2 张已提交，
+     * 用户会遇到"付了一部分"这种说不清的状态。</p>
      */
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public void pay(Long userId, String orderNo) {
-        // ===== 第 1 步：CAS 流转 UNPAID → PAID =====
-        // 影响 0 行 = 状态不是 UNPAID（重复支付、或已被超时任务取消）。
-        // 同一条语句同时保证"已取消的单不可能被支付"，这也正是超时取消敢用状态判断的原因
-        if (bookingMapper.markPaid(orderNo, userId, LocalDateTime.now()) == 0) {
-            throw new BusinessException(ErrorCode.BOOKING_STATUS_ERROR);
+    public void pay(Long userId, String orderNo, String parentNo) {
+        boolean groupPay = parentNo != null && !parentNo.isBlank();
+        if (!groupPay && (orderNo == null || orderNo.isBlank())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "缺少订单号");
+        }
+        LocalDateTime now = LocalDateTime.now();
+
+        List<Booking> paidOrders = new ArrayList<>();
+        if (groupPay) {
+            // ① 整组 CAS：同组所有 UNPAID 一起变 PAID。影响 0 行 = 这组已经不待支付
+            if (bookingMapper.markGroupPaid(parentNo, userId, now) == 0) {
+                throw new BusinessException(ErrorCode.BOOKING_STATUS_ERROR);
+            }
+            // ② 取回这组里已支付的单（可能有些早就付过了，只处理现在是 PAID 的）
+            paidOrders = bookingMapper.selectList(new LambdaQueryWrapper<Booking>()
+                    .eq(Booking::getParentNo, parentNo)
+                    .eq(Booking::getUserId, userId)
+                    .eq(Booking::getStatus, BookingStatus.PAID));
+        } else {
+            // ① 单笔 CAS。影响 0 行 = 状态不是 UNPAID（重复支付、或已被超时任务取消）
+            if (bookingMapper.markPaid(orderNo, userId, now) == 0) {
+                throw new BusinessException(ErrorCode.BOOKING_STATUS_ERROR);
+            }
+            paidOrders.add(loadOwned(userId, orderNo));
         }
 
-        Booking booking = loadOwned(userId, orderNo);
+        // ===== ③ 逐单出票：份数 = quantity，多份不合并（D4）=====
+        int granted = 0;
+        for (Booking booking : paidOrders) {
+            granted += entitlementService.grantForPaidOrder(booking).size();
+        }
+        log.info("支付成功: userId={}, 模式={}, 单数={}, 出票 {} 张", userId,
+                groupPay ? "整组 " + parentNo : "单笔 " + orderNo, paidOrders.size(), granted);
 
-        // ===== 第 2 步：出票（份数 = quantity，多份不合并，见 D4）=====
-        // 有效期由课程服务那边该门店的 valid_type 算：FOREVER→null / DAYS→付款起 N 天 / RANGE→固定截止
-        List<Entitlement> granted = entitlementService.grantForPaidOrder(booking);
-        log.info("支付成功: orderNo={}, userId={}, payAmount={}, 出票 {} 张",
-                orderNo, userId, booking.getPayAmount(), granted.size());
-
-        // ===== 第 3 步：站内通知（文案要把"能约几次"说清楚，用户下一步就是去预约）=====
-        Entitlement first = granted.get(0);
-        String timesText = first.getTotalTimes() == null
-                ? "有效期内不限次预约"
-                : "共 " + granted.size() + " 张凭证、每张 " + first.getTotalTimes() + " 次";
+        // ===== ④ 站内通知（一次给全组，别每张单发一条刷屏）=====
+        String firstName = paidOrders.get(0).getCourseName();
         notifyPublisher.publishBookingNotify(userId, "支付成功，凭证已生效",
-                "「" + booking.getCourseName() + "」已支付 ¥" + booking.getPayAmount() + "，"
-                        + timesText + "。只能在「" + booking.getStoreName() + "」约教练，"
-                        + (first.getValidUntil() == null ? "凭证长期有效。" : "请在到期前用完。"));
+                "「" + firstName + "」" + (paidOrders.size() > 1 ? "等 " + paidOrders.size() + " 笔订单" : "")
+                        + "已支付，共生成 " + granted + " 张凭证。"
+                        + "凭证只能在购买门店约教练，在「我的凭证」里选一张就能去约时间。");
     }
 
     @Override
-    public void cancel(Long userId, String orderNo) {
+    public void cancel(Long userId, String orderNo, String parentNo) {
+        if (parentNo != null && !parentNo.isBlank()) {
+            cancelGroup(userId, parentNo);
+            return;
+        }
+        if (orderNo == null || orderNo.isBlank()) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "缺少订单号");
+        }
         Booking booking = loadOwned(userId, orderNo);
 
         // ===== 第 1 步：CAS 取消。已支付的单不走取消（走退款），所以影响 0 行就报错 =====
@@ -233,6 +277,36 @@ public class BookingServiceImpl implements BookingService {
                 "「" + booking.getCourseName() + "」的订单已取消"
                         + (booking.getCouponRecordId() != null ? "，使用的优惠券已退回。" : "。"));
         log.info("订单已取消: orderNo={}, userId={}", orderNo, userId);
+    }
+
+    /**
+     * 整组取消：购物车合并下单出的 N 张待支付单一起取消。
+     * <p>★一组单要么整体付、要么整体撤。让用户在收银台上看到
+     * "3 张里取消了 2 张"是最糟糕的状态——他接下来不知道该付哪一张。</p>
+     */
+    private void cancelGroup(Long userId, String parentNo) {
+        // 先取回这一组的单，退券与通知都要逐张处理（★退券必须在状态改完之后）
+        List<Booking> group = bookingMapper.selectList(new LambdaQueryWrapper<Booking>()
+                .eq(Booking::getParentNo, parentNo)
+                .eq(Booking::getUserId, userId));
+        if (group.isEmpty()) {
+            throw new BusinessException(ErrorCode.BOOKING_NOT_FOUND);
+        }
+        if (bookingMapper.cancelGroup(parentNo, userId, "用户主动取消", LocalDateTime.now()) == 0) {
+            throw new BusinessException(ErrorCode.BOOKING_STATUS_ERROR, "该组订单已支付或已取消，无法取消");
+        }
+
+        int couponReturned = 0;
+        for (Booking booking : group) {
+            if (booking.getCouponRecordId() != null) {
+                refundCouponIfNeeded(booking, booking.getOrderNo());
+                couponReturned++;
+            }
+        }
+        notifyPublisher.publishBookingNotify(userId, "订单已取消",
+                "这一组 " + group.size() + " 笔订单已取消"
+                        + (couponReturned > 0 ? "，使用的 " + couponReturned + " 张优惠券已退回。" : "。"));
+        log.info("整组订单已取消: parentNo={}, userId={}, 单数={}", parentNo, userId, group.size());
     }
 
     /**
@@ -261,33 +335,252 @@ public class BookingServiceImpl implements BookingService {
     // 查询
     // =====================================================================
     @Override
-    public List<BookingVO> list(Long userId, String status) {
-        // 查我的订单：WHERE user_id [+ status] ORDER BY id DESC
-        // 命中 idx_user_status(user_id, status, id)：等值列在前、排序列在后，索引直接给出有序结果
-        List<Booking> bookings = bookingMapper.selectList(new LambdaQueryWrapper<Booking>()
-                .eq(Booking::getUserId, userId)
-                .eq(status != null && !status.isBlank() && !"ALL".equals(status), Booking::getStatus, status)
-                .orderByDesc(Booking::getId));
+    public List<BookingVO> list(Long userId, String tab) {
+        String normalized = tab == null || tab.isBlank() ? "ALL" : tab.trim().toUpperCase();
+
+        // ===== 第 1 步：先用订单轴能表达的条件收窄 =====
+        // WHERE user_id=? [+ status]，命中 idx_user_status(user_id, status, id)
+        LambdaQueryWrapper<Booking> wrapper = new LambdaQueryWrapper<Booking>()
+                .eq(Booking::getUserId, userId);
+        switch (normalized) {
+            case "UNPAID", "PAID", "CANCELED", "REFUNDED" -> wrapper.eq(Booking::getStatus, normalized);
+            // 待使用 / 已预约 / 已完成 / 待评价 都以"已支付"为前提，先按 PAID 收
+            case "WAIT_USE", "BOOKED", "FINISHED", "TO_RATE" -> wrapper.eq(Booking::getStatus, BookingStatus.PAID);
+            // ★"已过期/退款"这个 tab 天生跨两轴：订单 REFUNDED ∪ 凭证 EXPIRED 的订单，
+            //   两个来源要合并进同一个列表，所以这里只能取 PAID 与 REFUNDED 两类再后筛
+            case "EXPIRED" -> wrapper.in(Booking::getStatus, BookingStatus.PAID, BookingStatus.REFUNDED);
+            default -> { }   // ALL：不加状态条件
+        }
+        wrapper.orderByDesc(Booking::getId);
+
+        List<Booking> bookings = bookingMapper.selectList(wrapper);
         if (bookings.isEmpty()) {
             return new ArrayList<>();
         }
 
-        // ===== 一次 IN 批量取这批订单的凭证 =====
-        // ★绝不在循环里逐单查（10 行列表变 10 次查询）。凭证就在本库，
-        // 跨表但不跨服务，所以这里连 Feign 都没有
+        // ===== 第 2 步：批量取凭证与预约，一次查完（★不在循环里逐单查）=====
         List<String> orderNos = new ArrayList<>(bookings.size());
         for (Booking booking : bookings) {
             orderNos.add(booking.getOrderNo());
         }
         Map<String, List<Entitlement>> entitlementMap =
                 entitlementService.mapByOrderNos(userId, orderNos);
+        Set<String> bookedOrderNos = loadBookedOrderNos(userId, orderNos);
 
+        // ===== 第 3 步：按 tab 做跨轴后筛 =====
+        LocalDateTime now = LocalDateTime.now();
         List<BookingVO> result = new ArrayList<>(bookings.size());
         for (Booking booking : bookings) {
-            result.add(toVO(booking,
-                    entitlementMap.getOrDefault(booking.getOrderNo(), new ArrayList<>())));
+            List<Entitlement> entitlements =
+                    entitlementMap.getOrDefault(booking.getOrderNo(), new ArrayList<>());
+
+            if (!matchTab(normalized, booking, entitlements, bookedOrderNos, now)) {
+                continue;
+            }
+            result.add(toVO(booking, entitlements));
         }
         return result;
+    }
+
+    /**
+     * tab 的跨轴判断。
+     * <p>★这一段是整个列表接口里唯一"不简单"的地方，但它是<b>模型换来的必要复杂度</b>：
+     * 三条轴各自的状态无法用订单表的某一个列表达。
+     * 反面教材就是旧实现——把三个语义塞进一个 status 列，于是"取消要不要退名额"
+     * 要看当前状态、"核销"也要改状态，规则绕成一团。</p>
+     */
+    private boolean matchTab(String tab, Booking booking, List<Entitlement> entitlements,
+                             Set<String> bookedOrderNos, LocalDateTime now) {
+        switch (tab) {
+            case "WAIT_USE":
+                return hasUsable(entitlements, now);
+            case "BOOKED":
+                return bookedOrderNos.contains(booking.getOrderNo());
+            case "FINISHED":
+                return allSettled(entitlements);
+            case "TO_RATE":
+                // ★口径（已确认）：凭证全部用完或过期之后才能评价。
+                // "已经评过的不再出现在待评价"还要读 t_rating，在评价切片接上；
+                // 在那之前这个 tab 会包含评过的单，功能不阻断，只是列表偏长一点
+                return allSettled(entitlements);
+            case "EXPIRED":
+                // 两个来源：订单被退款了，或者凭证里有已过期的
+                if (BookingStatus.REFUNDED.equals(booking.getStatus())) {
+                    return true;
+                }
+                for (Entitlement entitlement : entitlements) {
+                    if (EntitlementStatus.EXPIRED.equals(entitlement.getStatus())) {
+                        return true;
+                    }
+                }
+                return false;
+            default:
+                return true;
+        }
+    }
+
+    private boolean hasUsable(List<Entitlement> entitlements, LocalDateTime now) {
+        for (Entitlement entitlement : entitlements) {
+            if (entitlement.usableAt(now)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 这张订单的凭证是否都已结束（用完或过期）。★一张凭证都没有不算"已完成" */
+    private boolean allSettled(List<Entitlement> entitlements) {
+        if (entitlements.isEmpty()) {
+            return false;
+        }
+        for (Entitlement entitlement : entitlements) {
+            if (EntitlementStatus.ACTIVE.equals(entitlement.getStatus())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** 一次查回"这些订单里哪些还有待上课的预约"，返回订单号集合 */
+    private Set<String> loadBookedOrderNos(Long userId, List<String> orderNos) {
+        List<Reservation> rows = reservationMapper.selectList(new LambdaQueryWrapper<Reservation>()
+                .eq(Reservation::getUserId, userId)
+                .eq(Reservation::getStatus, ReservationStatus.BOOKED)
+                .in(Reservation::getOrderNo, orderNos));
+        Set<String> orderSet = new java.util.HashSet<>();
+        for (Reservation row : rows) {
+            orderSet.add(row.getOrderNo());
+        }
+        return orderSet;
+    }
+
+    /**
+     * 订单详情：把"订单 → 凭证 → 预约"三层一次给全。
+     *
+     * <p>★这个接口是三条状态轴拆开的<b>可见收益</b>：用户在一个页面上能看到
+     * "买了 3 份、每张几次、约了哪节、上完了没"。
+     * 旧模型里订单一件事就是预约一件事，这三层的语义全挤在一个 status 上，
+     * 详情页只能显示一句"已完成"，用户不知道已完成的是钱还是课。</p>
+     */
+    @Override
+    public BookingDetailVO detail(Long userId, String orderNo) {
+        Booking booking = loadOwned(userId, orderNo);
+
+        // ===== 第 1 步：这张单的凭证 =====
+        List<Entitlement> entitlements = entitlementService
+                .mapByOrderNos(userId, List.of(orderNo))
+                .getOrDefault(orderNo, new ArrayList<>());
+        List<EntitlementVO> entitlementVOs = new ArrayList<>(entitlements.size());
+        List<Long> entitlementIds = new ArrayList<>(entitlements.size());
+        for (Entitlement entitlement : entitlements) {
+            entitlementVOs.add(entitlementService.toVO(entitlement));
+            entitlementIds.add(entitlement.getId());
+        }
+
+        // ===== 第 2 步：这些凭证名下的预约记录（一次 IN 查完，挂在各自凭证下面）=====
+        if (!entitlementIds.isEmpty()) {
+            List<Reservation> reservations = reservationMapper.selectList(
+                    new LambdaQueryWrapper<Reservation>()
+                            .eq(Reservation::getUserId, userId)
+                            .in(Reservation::getEntitlementId, entitlementIds)
+                            .orderByDesc(Reservation::getStartTime));
+            Map<Long, List<EntitlementVO.ReservationBrief>> briefsByEntitlement = new java.util.HashMap<>();
+            for (Reservation reservation : reservations) {
+                EntitlementVO.ReservationBrief brief = EntitlementVO.ReservationBrief.builder()
+                        .reservationNo(reservation.getReservationNo())
+                        .startText(formatTime(reservation.getStartTime()))
+                        .coachName(reservation.getCoachName())
+                        .status(reservation.getStatus())
+                        .statusText(ReservationStatus.textOf(reservation.getStatus()))
+                        .build();
+                briefsByEntitlement.computeIfAbsent(reservation.getEntitlementId(),
+                        key -> new ArrayList<>()).add(brief);
+            }
+            for (EntitlementVO vo : entitlementVOs) {
+                vo.setReservations(briefsByEntitlement.getOrDefault(vo.getEntitlementId(), new ArrayList<>()));
+            }
+        }
+
+        // ===== 第 3 步：两个装饰性字段各一次 Feign（详情页低频，可接受；取不到不影响主信息）=====
+        String courseType = null;
+        String coverColor = null;
+        String storeAddress = null;
+        try {
+            CourseDTO course = courseClient.detail(booking.getCourseId(), booking.getStoreId()).getData();
+            if (course != null) {
+                courseType = course.getType();
+                coverColor = course.getCoverColor();
+            }
+            StoreDTO store = storeClient.detail(booking.getStoreId()).getData();
+            if (store != null) {
+                storeAddress = store.getAddress();
+            }
+        } catch (Exception e) {
+            // ★课程服务抖一下不该让用户看不到自己的订单：地址和配色是补充信息，缺了就少显示一行
+            log.warn("订单详情的补充信息取数失败，继续返回主体: orderNo={}", orderNo, e);
+        }
+
+        LocalDateTime now = LocalDateTime.now();
+        List<String> actions = new ArrayList<>();
+        if (BookingStatus.UNPAID.equals(booking.getStatus())) {
+            actions.add("PAY");
+            actions.add("CANCEL");
+        } else if (BookingStatus.PAID.equals(booking.getStatus())) {
+            if (hasUsable(entitlements, now)) {
+                actions.add("BOOK");
+            }
+            // ★RATE 的条件比列表严：要"凭证全部结束"才可评（已确认口径），
+            // 再叠加"没评过"要读 t_rating，在评价切片接上
+            if (allSettled(entitlements)) {
+                actions.add("RATE");
+            }
+            actions.add("AGAIN");
+        } else {
+            actions.add("AGAIN");
+        }
+
+        return BookingDetailVO.builder()
+                .orderNo(booking.getOrderNo())
+                .parentNo(booking.getParentNo())
+                .isFromCart(booking.getParentNo() != null)
+                .status(booking.getStatus())
+                .statusText(BookingStatus.textOf(booking.getStatus()))
+                .courseId(booking.getCourseId())
+                .courseName(booking.getCourseName())
+                .courseKind(booking.getCourseKind())
+                .courseType(courseType)
+                .coverColor(coverColor)
+                .lessonHours(booking.getLessonHours())
+                .saleType(booking.getSaleType())
+                .saleTypeText("UNLIMITED".equals(booking.getSaleType()) ? "不限次"
+                        : ("CONTENT".equals(booking.getCourseKind()) ? null : "按次购买"))
+                .timesGranted(booking.getTimesGranted())
+                .quantity(booking.getQuantity())
+                .storeId(booking.getStoreId())
+                .storeName(booking.getStoreName())
+                .storeAddress(storeAddress)
+                .unitPrice(booking.getQuantity() == null || booking.getQuantity() < 1
+                        ? booking.getOriginalAmount()
+                        : booking.getOriginalAmount().divide(BigDecimal.valueOf(booking.getQuantity()), 2,
+                        java.math.RoundingMode.HALF_UP))
+                .unitPriceText(formatMoney(booking.getOriginalAmount()))
+                .originalAmount(booking.getOriginalAmount())
+                .originalAmountText(formatMoney(booking.getOriginalAmount()))
+                .discountAmount(booking.getDiscountAmount())
+                .discountAmountText(formatMoney(booking.getDiscountAmount()))
+                .payAmount(booking.getPayAmount())
+                .payAmountText(formatMoney(booking.getPayAmount()))
+                .couponTitle(booking.getCouponTitle())
+                .createdText(formatTime(booking.getCreatedAt()))
+                .paidText(formatTime(booking.getPayTime()))
+                .canceledText(formatTime(booking.getCanceledAt()))
+                .refundText(formatTime(booking.getRefundAt()))
+                .cancelReason(booking.getCancelReason())
+                .entitlements(entitlementVOs)
+                // ★评过没评过要读 t_rating，在评价切片接入；现在统一给 false
+                .rated(false)
+                .actions(actions)
+                .build();
     }
 
     @Override
@@ -315,8 +608,9 @@ public class BookingServiceImpl implements BookingService {
         if (booking == null) {
             throw new BusinessException(ErrorCode.BOOKING_NOT_FOUND);
         }
-        // 复用用户侧的取消逻辑：状态条件、退券、通知三件事不重复实现一遍
-        cancel(booking.getUserId(), orderNo);
+        // 复用用户侧的取消逻辑：状态条件、退券、通知三件事不重复实现一遍。
+        // ★管理端只按单号撤这一笔（代客操作要精确，不该顺手把同组别的单也撤了）
+        cancel(booking.getUserId(), orderNo, null);
         log.info("管理端代客取消订单: orderNo={}, 对象 userId={}", orderNo, booking.getUserId());
     }
 

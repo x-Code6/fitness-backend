@@ -298,7 +298,8 @@ public class EntitlementServiceImpl implements EntitlementService {
     }
 
     /** 实体 → C 端 VO（字段名对齐前端 Mock 的 entitlementVO，派生值全部在这里算完） */
-    private EntitlementVO toVO(Entitlement entitlement) {
+    @Override
+    public EntitlementVO toVO(Entitlement entitlement) {
         boolean unlimited = entitlement.getTotalTimes() == null;
         int used = entitlement.getUsedTimes() == null ? 0 : entitlement.getUsedTimes();
         Integer remain = unlimited ? null : Math.max(entitlement.getTotalTimes() - used, 0);

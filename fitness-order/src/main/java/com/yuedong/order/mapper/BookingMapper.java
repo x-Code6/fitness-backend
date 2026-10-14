@@ -56,6 +56,19 @@ public interface BookingMapper extends BaseMapper<Booking> {
                @Param("now") LocalDateTime now);
 
     /**
+     * 整组取消：购物车合并下单出的 N 张待支付单一起取消。
+     *
+     * <p>★和 {@link #markGroupPaid} 对称：一组单要么整体付掉、要么整体取消，
+     * 让用户在收银台上看到"3 张里取消了 2 张"是最糟糕的状态。</p>
+     */
+    @Update("UPDATE t_booking SET status = 'CANCELED', cancel_reason = #{reason}, canceled_at = #{now} " +
+            "WHERE parent_no = #{parentNo} AND user_id = #{userId} AND status = 'UNPAID'")
+    int cancelGroup(@Param("parentNo") String parentNo,
+                    @Param("userId") Long userId,
+                    @Param("reason") String reason,
+                    @Param("now") LocalDateTime now);
+
+    /**
      * 超时未支付自动取消：与 {@link #cancel} 的区别是<b>不校验 user_id</b>（MQ 消费场景）。
      *
      * <p>★条件仍只有 {@code status='UNPAID'}，所以"用户已经支付完了，延迟消息才到"这种情况
