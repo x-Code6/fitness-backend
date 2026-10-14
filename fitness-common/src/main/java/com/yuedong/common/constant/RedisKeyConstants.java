@@ -89,15 +89,28 @@ public final class RedisKeyConstants {
     /** 月度积分榜，ZSet，member=userId（打卡/完课/发动态 ZINCRBY） */
     public static final String RANK_MONTH = "rank:month:";
 
-    /** 当月打卡位图，Bitmap，offset = 日 - 1（yyyyMM 由使用方拼接） */
+    /**
+     * 打卡位图，Bitmap：<b>一人一 key</b>（不是"一人一月一 key"）。
+     *
+     * <p>★改这个形状是为了修两件事（docs D16）：
+     * ① 旧 key {@code point:check:{yyyyMM}:{userId}} 的 offset 是"当月第几天"，
+     *    跨月的连续打卡永远数不出来（10-01 的连续要看 9 月的位图，得再拼一个 key）；
+     *    现在 offset = <b>距基准日的天数</b>，整条时间轴在同一个位图上连续，
+     *    "连续多少天"就是从今天往低数连续 1。
+     * ② key 数量从"用户数 × 月数"降到"用户数"。</p>
+     *
+     * <p>★它现在是<b>可重建的展示缓存</b>：打卡明细的真相在 {@code t_checkin_record}，
+     * Redis 被清空时第一次打卡会从 DB 把位图补回来（见 CheckinServiceImpl#ensureBitmap），
+     * 不再像旧版那样"宕机一次当月打卡全丢、连续天数无法重建"（P0-5）。</p>
+     */
     public static final String POINT_CHECK = "point:check:";
 
     public static String rankMonth(String yyyyMM) {
         return RANK_MONTH + yyyyMM;
     }
 
-    public static String pointCheck(String yyyyMM, Long userId) {
-        return POINT_CHECK + yyyyMM + ":" + userId;
+    public static String pointCheck(Long userId) {
+        return POINT_CHECK + userId;
     }
 
     // ==================== 埋点域（behavior 服务） ====================
