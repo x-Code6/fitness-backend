@@ -39,6 +39,9 @@ public enum ErrorCode {
     SECKILL_SOLD_OUT(42004, "手慢了，名额已被抢光"),
     SECKILL_DUPLICATE(42005, "每人每期限购一单"),
     VIDEO_NOT_FOUND(42006, "视频不存在"),
+    COACH_NOT_FOUND(42007, "教练不存在或已停用"),
+    COACH_WORK_TIME_INVALID(42008, "可约时间设置不合法"),
+    COACH_NAME_DUPLICATE(42009, "该门店已存在同名教练"),
 
     // ---------- 订单服务（43000 ~ 43999） ----------
     BOOKING_NOT_FOUND(43001, "订单不存在"),
