@@ -120,8 +120,10 @@ public class SlotServiceImpl implements SlotService {
                 .courseName(course.getName())
                 .lessonHours(lessonHours)
                 .openText(storeOpenText(store))
-                // ruleTexts 由课程域的规则策略（切片C）生成。先留字段不给值，
-                // 免得契约先发给前端、接完再改一次
+                // 规则文案由课程域的策略生成后随快照带过来（第 2 步那次 Feign 已经拿到了）。
+                // ★不在这里自己拼一遍：时段页和课程详情页的规则说法必须完全一致，
+                // 两处各写一份迟早会漂
+                .ruleTexts(course.getRuleTexts())
                 .my(my)
                 .coaches(coachVOs)
                 .build();

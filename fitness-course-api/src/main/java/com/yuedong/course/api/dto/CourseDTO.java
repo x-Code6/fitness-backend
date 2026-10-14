@@ -7,6 +7,7 @@ import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.List;
 
 /**
  * 课程简况 DTO：order 服务建单时跨服务取课程快照用。
@@ -84,4 +85,15 @@ public class CourseDTO {
 
     /** valid_type=RANGE 时生效：可使用截止。★FOREVER/DAYS 时为 null，不代表"永久"，看 validType */
     private LocalDateTime useEndTime;
+
+    /**
+     * 整块规则条目（<b>由课程域的策略生成后随快照带出</b>）。
+     * <p>★为什么在课程侧算好而不是让 order 自己拼：规则文案是课程域的知识
+     * （几小时一节、一单几次、过期怎么处理），order 再写一份就是两处文案，
+     * 改一处忘另一处是必然结果。时段页要显示规则，就从这里取。</p>
+     */
+    private List<String> ruleTexts;
+
+    /** 一句话规则摘要，同上一样的理由 */
+    private String ruleSummary;
 }
