@@ -2,11 +2,15 @@ package com.yuedong.course.api.client;
 
 import com.yuedong.common.result.Result;
 import com.yuedong.course.api.dto.CourseDTO;
+import com.yuedong.course.api.dto.CourseStoreKeyDTO;
 import com.yuedong.course.api.dto.SeckillActiveDTO;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
+
+import java.util.List;
 
 /**
  * 课程服务业务契约（order 服务下单/秒杀时经 Feign 调用）。
@@ -34,6 +38,20 @@ public interface CourseClient {
     @GetMapping("/inner/course/detail")
     Result<CourseDTO> detail(@RequestParam("courseId") Long courseId,
                              @RequestParam("storeId") Long storeId);
+
+    /**
+     * 批量取"课程 × 门店"快照（购物车列表/结算用）。
+     *
+     * <p>★为什么专门要一个批量口子：购物车最多 20 条，逐条调 {@link #detail} 就是
+     * 20 次网络往返——和在循环里查库是同一个毛病，而且更贵（每次都是一整套 HTTP）。
+     * 服务端用三条 SQL（课程 IN、关系 IN、门店 IN）拼出结果，<b>一次 RPC 拿全</b>。</p>
+     *
+     * @param keys 要查的 (courseId, storeId) 对
+     * @return 快照列表，顺序与入参一致；查不到的那一对<b>不会出现在结果里</b>
+     *         （调用方按 courseId+storeId 回查，缺失即"该店已下架"）
+     */
+    @PostMapping("/inner/course/batch-detail")
+    Result<List<CourseDTO>> batchDetail(@RequestBody List<CourseStoreKeyDTO> keys);
 
     /** 查课程进行中的秒杀活动：{@code data=null} 表示没有活动 */
     @GetMapping("/inner/course/seckill/active")

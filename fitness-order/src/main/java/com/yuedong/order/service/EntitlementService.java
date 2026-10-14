@@ -52,11 +52,19 @@ public interface EntitlementService {
      */
     Map<String, List<Entitlement>> mapByOrderNos(Long userId, List<String> orderNos);
 
-    /**
-     * 这一单的凭证是否都已结束（用完或过期）——评价门槛（已确认口径：上完才让评）。
+    /** 这一单的凭证是否都已结束（用完或过期）——评价门槛（已确认口径：上完才让评）。
      * <p>⚠️ 只有一种情况返回 true：该单至少有一张凭证，且没有任何一张还是 ACTIVE。</p>
      */
     boolean isOrderFinished(String orderNo);
+
+    /**
+     * 实体 → VO。<b>公开这一个转换是为了让订单详情复用同一份字段口径</b>
+     * （剩余次数、有效期文案、canBook、subTitle 的算法只有一处）。
+     * <p>★不公开的话，订单详情要么自己再拼一遍 VO（两处字段迟早分叉），
+     * 要么把实体直接吐给前端（会漏出 status 之外的内部字段）。
+     * 转换方法放服务里对外暴露，是这两个坏选择之外的第三条路。</p>
+     */
+    EntitlementVO toVO(Entitlement entitlement);
 
     /**
      * 过期扫描（每小时由定时任务调用）：ACTIVE 且已过 valid_until 的凭证置 EXPIRED，

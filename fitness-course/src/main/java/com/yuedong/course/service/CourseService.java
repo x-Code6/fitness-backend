@@ -3,6 +3,7 @@ package com.yuedong.course.service;
 import com.yuedong.course.api.dto.CourseAdminDTO;
 import com.yuedong.course.api.dto.CourseDTO;
 import com.yuedong.course.api.dto.CourseSaveDTO;
+import com.yuedong.course.api.dto.CourseStoreKeyDTO;
 import com.yuedong.course.model.entity.Course;
 import com.yuedong.course.model.entity.SeckillActivity;
 import com.yuedong.course.model.vo.CourseVO;
@@ -49,6 +50,15 @@ public interface CourseService {
 
     /** 内部接口：给 order 服务建单时取课程快照字段 */
     CourseDTO getInnerDetail(Long courseId, Long storeId);
+
+    /**
+     * 批量取"课程 × 门店"快照（购物车列表/结算用，一次 RPC 拿全）。
+     *
+     * <p>★与 {@link #getInnerDetail} 的两点不同：
+     * <b>不抛"课程不存在"</b>（购物车里出现下架的课是正常事，要显示"已下架"而不是打不开整页），
+     * 且<b>下架的课也会返回</b>（{@code onSale=false}），由调用方决定怎么标灰。</p>
+     */
+    List<CourseDTO> getBatchDetail(List<CourseStoreKeyDTO> keys);
 
     /**
      * 组装 C 端课程 VO（<b>给本模块其他服务复用，避免同一套 VO 逻辑写两遍</b>）。

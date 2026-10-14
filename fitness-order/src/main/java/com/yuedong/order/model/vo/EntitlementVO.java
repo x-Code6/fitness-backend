@@ -3,6 +3,8 @@ package com.yuedong.order.model.vo;
 import lombok.Builder;
 import lombok.Data;
 
+import java.util.List;
+
 /**
  * 凭证视图（"我的凭证"列表、预约页权益条、订单详情嵌套都用它）。
  *
@@ -77,4 +79,29 @@ public class EntitlementVO {
      * 不给区分信息用户会以为是系统 bug。</p>
      */
     private String subTitle;
+
+    /**
+     * 这张凭证下的预约记录。<b>只有订单详情会填</b>，"我的凭证"列表里是 null。
+     * <p>★为什么把子记录挂在凭证对象上而不是另开一个 VO：订单详情的结构就是
+     * "订单 → N 张凭证 → 每张凭证的预约记录"，电商订单详情"商品行 → 售后记录"同理。
+     * 挂成两个平行列表的话，前端要自己按 entitlementId 去对，多一次拼装多一处出错。</p>
+     */
+    private List<ReservationBrief> reservations;
+
+    /** 凭证详情里的预约摘要（只够展示一行，明细走 /reservation/detail） */
+    @Data
+    @Builder
+    public static class ReservationBrief {
+
+        private String reservationNo;
+
+        /** "2026-10-14 18:00" */
+        private String startText;
+
+        private String coachName;
+
+        private String status;
+
+        private String statusText;
+    }
 }

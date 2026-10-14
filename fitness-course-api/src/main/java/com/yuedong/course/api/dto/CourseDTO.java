@@ -43,6 +43,14 @@ public class CourseDTO {
     /** TIMES / UNLIMITED */
     private String saleType;
 
+    /**
+     * 封面渐变色下标 0~5。
+     * <p>★带上它的理由很具体：购物车页要把每条画成和列表一样的卡片，
+     * 而卡片没有图时靠这个下标定颜色。为这一个装饰字段单独加一次 RPC 不值，
+     * 但批量快照里顺手就有，不必让前端为了颜色再查一遍详情。</p>
+     */
+    private String coverColor;
+
     /** 买一单给几次（TIMES）；UNLIMITED 为 null */
     private Integer timesPerBuy;
 
