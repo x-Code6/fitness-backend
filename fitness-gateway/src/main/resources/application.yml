@@ -105,6 +105,18 @@ spring:
           filters:
             - StripPrefix=1
 
+        # 上传的图片（D19）。文件落在 admin-server 的磁盘上，读口也在那边，
+        # 所以这一条路由指向同一个服务，只是路径不带 /api/admin 前缀。
+        # ★为什么要单独一条而不是把 /uploads 塞进 /api/admin/** 底下：
+        #   浏览器 <img> 请求不会带管理端 JWT，混在 /api/admin 里就必须让拦截器再排除一次，
+        #   而"排除"这件事写在网关白名单里比写在业务服务的拦截器里更容易被看见
+        - id: uploads
+          uri: lb://fitness-admin-server
+          predicates:
+            - Path=/api/uploads/**
+          filters:
+            - StripPrefix=1
+
   # Redis：给下面的 jti 令牌白名单校验用。
   # 网关用的是响应式客户端（ReactiveStringRedisTemplate），连接池与超时都要设，
   # 否则 Redis 卡住时会把 Netty 事件循环线程拖住——timeout 就是兜这个的。
@@ -160,6 +172,12 @@ auth:
     # 就是给未来的自己埋一个"以为放行了其实没放行"的排查坑。
     - /api/admin/auth/login
     - /api/admin/auth/captcha
+
+    # ---- 上传的图片：<img> 请求不会带任何凭证，必须匿名可读 ----
+    # ★这里放行的是"读一张已存在的图片"，写口（/api/admin/upload/image）仍然要管理端 JWT。
+    #   只读口匿名是有意为之，代价是"知道路径的人都能看图"——所以文件名必须用 UUID
+    #   （不可猜），且库里存的是相对路径而不是用户可控的原始名。
+    - /api/uploads/**
 
     # ---- 接口文档 ----
     - /**/v3/api-docs
