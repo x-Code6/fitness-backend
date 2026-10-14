@@ -1,10 +1,13 @@
 package com.yuedong.order.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.yuedong.common.exception.BusinessException;
+import com.yuedong.common.model.PageDTO;
 import com.yuedong.common.result.ErrorCode;
 import com.yuedong.course.api.client.CourseClient;
 import com.yuedong.course.api.dto.CourseDTO;
+import com.yuedong.order.api.dto.EntitlementAdminDTO;
 import com.yuedong.order.constant.BookingStatus;
 import com.yuedong.order.constant.EntitlementStatus;
 import com.yuedong.order.constant.OrderConstants;
@@ -13,6 +16,7 @@ import com.yuedong.order.mapper.EntitlementMapper;
 import com.yuedong.order.model.entity.Booking;
 import com.yuedong.order.model.entity.Entitlement;
 import com.yuedong.order.model.vo.EntitlementVO;
+import com.yuedong.order.model.vo.ReservationCountRow;
 import com.yuedong.order.mq.NotifyPublisher;
 import com.yuedong.order.service.EntitlementService;
 import lombok.RequiredArgsConstructor;
@@ -50,6 +54,8 @@ public class EntitlementServiceImpl implements EntitlementService {
 
     private final EntitlementMapper entitlementMapper;
     private final BookingMapper bookingMapper;
+    /** 只为"整页凭证各被约了几次"这一个聚合查询服务，不写任何预约状态 */
+    private final com.yuedong.order.mapper.ReservationMapper reservationMapper;
     private final CourseClient courseClient;
     private final NotifyPublisher notifyPublisher;
 
@@ -345,5 +351,80 @@ public class EntitlementServiceImpl implements EntitlementService {
             return "";
         }
         return orderNo.length() <= 4 ? orderNo : orderNo.substring(orderNo.length() - 4);
+    }
+
+    // =====================================================================
+    // 管理端
+    // =====================================================================
+
+    @Override
+    public PageDTO<EntitlementAdminDTO> adminPage(String status, String keyword, Long userId,
+                                                  Integer page, Integer size) {
+        boolean hasKeyword = keyword != null && !keyword.isBlank();
+        String kw = hasKeyword ? keyword.trim() : null;
+
+        Page<Entitlement> result = entitlementMapper.selectPage(
+                new Page<>(page == null || page < 1 ? 1 : page, size == null || size < 1 ? 10 : Math.min(size, 50)),
+                new LambdaQueryWrapper<Entitlement>()
+                        .eq(status != null && !status.isBlank() && !"ALL".equals(status),
+                                Entitlement::getStatus, status)
+                        .eq(userId != null, Entitlement::getUserId, userId)
+                        // ★关键词包进括号：LIKE 多字段 OR 不括起来会抢走外面 eq 条件的作用域
+                        .and(hasKeyword, item -> item.like(Entitlement::getOrderNo, kw)
+                                .or().like(Entitlement::getCourseName, kw))
+                        .orderByDesc(Entitlement::getId));
+
+        List<EntitlementAdminDTO> rows = new ArrayList<>();
+        for (Entitlement entitlement : result.getRecords()) {
+            rows.add(toAdminDTO(entitlement));
+        }
+        fillReservationCounts(rows);
+        return PageDTO.of(rows, result.getTotal());
+    }
+
+    @Override
+    public void fillReservationCounts(List<EntitlementAdminDTO> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        List<Long> ids = rows.stream().map(EntitlementAdminDTO::getId).toList();
+        Map<Long, Integer> counts = new HashMap<>();
+        for (ReservationCountRow row : reservationMapper.countByEntitlements(ids)) {
+            counts.put(row.getEntitlementId(), row.getReservationCount());
+        }
+        for (EntitlementAdminDTO row : rows) {
+            // GROUP BY 不会返回"一次都没约"的那些凭证，所以这里必须给默认 0
+            row.setReservationCount(counts.getOrDefault(row.getId(), 0));
+        }
+    }
+
+    @Override
+    public EntitlementAdminDTO toAdminDTO(Entitlement entitlement) {
+        // 剩余次数：UNLIMITED 形态没有"剩余"这个概念，给 null 而不是 total，
+        // 免得前端拿到一个看起来像数字的东西去显示"剩 999999 次"
+        Integer remain = null;
+        if (!"UNLIMITED".equals(entitlement.getSaleType()) && entitlement.getTotalTimes() != null) {
+            remain = Math.max(entitlement.getTotalTimes()
+                    - (entitlement.getUsedTimes() == null ? 0 : entitlement.getUsedTimes()), 0);
+        }
+        return EntitlementAdminDTO.builder()
+                .id(entitlement.getId())
+                .userId(entitlement.getUserId())
+                .orderNo(entitlement.getOrderNo())
+                .courseId(entitlement.getCourseId())
+                .courseName(entitlement.getCourseName())
+                .storeId(entitlement.getStoreId())
+                .storeName(entitlement.getStoreName())
+                .lessonHours(entitlement.getLessonHours())
+                .saleType(entitlement.getSaleType())
+                .totalTimes(entitlement.getTotalTimes())
+                .usedTimes(entitlement.getUsedTimes())
+                .remainTimes(remain)
+                .validUntil(entitlement.getValidUntil())
+                .validUntilText(formatValidUntil(entitlement.getValidUntil()))
+                .status(entitlement.getStatus())
+                .statusText(EntitlementStatus.textOf(entitlement.getStatus()))
+                .createdAt(entitlement.getCreatedAt())
+                .build();
     }
 }

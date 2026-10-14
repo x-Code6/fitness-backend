@@ -1,8 +1,10 @@
 package com.yuedong.course.controller.inner;
 
+import com.yuedong.common.model.PageDTO;
 import com.yuedong.common.result.Result;
+import com.yuedong.course.api.dto.CoachAdminDTO;
 import com.yuedong.course.api.dto.CoachDTO;
-import com.yuedong.course.model.dto.CoachSaveDTO;
+import com.yuedong.course.api.dto.CoachSaveDTO;
 import com.yuedong.course.model.entity.Coach;
 import com.yuedong.course.service.CoachService;
 import jakarta.validation.Valid;
@@ -71,6 +73,37 @@ public class InnerCoachController {
     @GetMapping("/course-ids")
     public Result<List<Long>> courseIds(@RequestParam Long coachId) {
         return Result.ok(coachService.courseIdsOf(coachId));
+    }
+
+    /** 管理端：教练分页（四个筛选项都允许为 null，null 表示不按该项过滤） */
+    @GetMapping("/admin/page")
+    public Result<PageDTO<CoachAdminDTO>> adminPage(
+            @RequestParam(required = false) Long storeId,
+            @RequestParam(required = false) Integer status,
+            @RequestParam(required = false) Integer gender,
+            @RequestParam(required = false) String keyword,
+            @RequestParam(defaultValue = "1") Integer page,
+            @RequestParam(defaultValue = "10") Integer size) {
+        return Result.ok(coachService.adminPage(storeId, status, gender, keyword, page, size));
+    }
+
+    /** 管理端：启用/停用教练 */
+    @PostMapping("/admin/status")
+    public Result<Void> adminStatus(@RequestParam Long id, @RequestParam Integer status) {
+        coachService.adminStatus(id, status);
+        return Result.ok();
+    }
+
+    /**
+     * 管理端：删除教练。
+     * <p>★调用前 admin-server 必须已经确认"该教练没有未完成的预约"——
+     * 那张表在 yd_order，本服务查不到，所以这个前置条件写在契约上而不是写在代码里，
+     * 改这个接口的人要一起改 admin-server 那侧的编排。</p>
+     */
+    @PostMapping("/admin/delete")
+    public Result<Void> adminDelete(@RequestParam Long id) {
+        coachService.adminDelete(id);
+        return Result.ok();
     }
 
     /**

@@ -7,16 +7,21 @@ import com.yuedong.common.constant.RedisKeyConstants;
 import com.yuedong.common.exception.BusinessException;
 import com.yuedong.common.model.PageDTO;
 import com.yuedong.common.result.ErrorCode;
+import com.yuedong.course.api.dto.AdminCountDTO;
 import com.yuedong.course.api.dto.CourseAdminDTO;
 import com.yuedong.course.api.dto.CourseDTO;
 import com.yuedong.course.api.dto.CourseSaveDTO;
 import com.yuedong.course.api.dto.CourseStoreKeyDTO;
+import com.yuedong.course.api.dto.CourseWindowAdminDTO;
+import com.yuedong.course.api.dto.CourseWindowSaveDTO;
 import com.yuedong.course.cache.CacheWrapper;
 import com.yuedong.course.mapper.CoachMapper;
 import com.yuedong.course.mapper.CourseMapper;
 import com.yuedong.course.mapper.CourseStoreMapper;
 import com.yuedong.course.mapper.SeckillActivityMapper;
 import com.yuedong.course.mapper.StoreMapper;
+import com.yuedong.course.model.entity.Coach;
+import com.yuedong.course.model.entity.CoachCourse;
 import com.yuedong.course.model.entity.Course;
 import com.yuedong.course.model.entity.CourseStore;
 import com.yuedong.course.model.entity.SeckillActivity;
@@ -35,15 +40,18 @@ import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.time.Duration;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 /**
  * 课程业务实现（v2）。
@@ -93,6 +101,8 @@ public class CourseServiceImpl implements CourseService {
     private final CourseMapper courseMapper;
     private final CourseStoreMapper courseStoreMapper;
     private final CoachMapper coachMapper;
+    /** 只为"这门课有几位教练会教"这一个聚合，不写教练的任何状态 */
+    private final com.yuedong.course.mapper.CoachCourseMapper coachCourseMapper;
     private final StoreMapper storeMapper;
     private final SeckillActivityMapper seckillActivityMapper;
     /** 规则文案工厂（D21 策略模式）。文案只在这一处产出，列表/详情/时段页都从这里取 */
@@ -480,25 +490,72 @@ public class CourseServiceImpl implements CourseService {
     // 管理端（fitness-admin-server 经 Feign 调用）；改完主动失效缓存
     // =====================================================================
     @Override
-    public PageDTO<CourseAdminDTO> adminPage(String type, String keyword, Integer page, Integer size) {
+    public PageDTO<CourseAdminDTO> adminPage(String type, String kind, Integer status,
+                                             String keyword, Integer page, Integer size) {
         // 分页查课程：MP 的 PaginationInnerInterceptor 自动补 LIMIT 与 COUNT(*)
+        // ★kind（可售课/展示课）与 status（上架/下架）是这一版补上的两个筛选项：
+        //   展示型课程（切片 H）进来之后，"只看在售的课"和"只看卖课时"是两种完全不同的操作
         Page<Course> result = courseMapper.selectPage(
-                new Page<>(page == null ? 1 : page, size == null ? 10 : size),
+                new Page<>(page == null ? 1 : page, size == null || size < 1 ? 10 : Math.min(size, 50)),
                 new LambdaQueryWrapper<Course>()
                         .eq(type != null && !type.isBlank() && !TYPE_ALL.equals(type), Course::getType, type)
+                        .eq(kind != null && !kind.isBlank() && !TYPE_ALL.equals(kind), Course::getCourseKind, kind)
+                        .eq(status != null, Course::getStatus, status)
                         .like(keyword != null && !keyword.isBlank(), Course::getName, keyword)
                         .orderByDesc(Course::getId));
 
         if (result.getRecords().isEmpty()) {
             return PageDTO.of(List.of(), result.getTotal());
         }
+        List<Long> courseIds = result.getRecords().stream().map(Course::getId).toList();
 
-        Map<Long, Integer> storeCountMap = loadStoreCounts(
-                result.getRecords().stream().map(Course::getId).toList());
+        // ===== 整页的门店窗口一次查完，再按 courseId 分组 =====
+        // ★storeCount 直接从这份分组里数出来，不再单独跑一次 COUNT：
+        //   同一次查询的结果既能算数又能填表单，两处口径天然一致
+        List<CourseStore> windows = courseStoreMapper.selectList(new LambdaQueryWrapper<CourseStore>()
+                .in(CourseStore::getCourseId, courseIds)
+                .orderByAsc(CourseStore::getStoreId));
+        Map<Long, String> storeNames = windows.isEmpty() ? Map.of()
+                : storeMapper.selectBatchIds(windows.stream()
+                .map(CourseStore::getStoreId).collect(Collectors.toSet())).stream()
+                .collect(Collectors.toMap(Store::getId, Store::getName));
+        LocalDateTime now = LocalDateTime.now();
+        Map<Long, List<CourseWindowAdminDTO>> windowsByCourse = new HashMap<>();
+        for (CourseStore window : windows) {
+            windowsByCourse.computeIfAbsent(window.getCourseId(), k -> new ArrayList<>())
+                    .add(CourseWindowAdminDTO.builder()
+                            .id(window.getId())
+                            .courseId(window.getCourseId())
+                            .storeId(window.getStoreId())
+                            .storeName(storeNames.get(window.getStoreId()))
+                            .sellStartTime(window.getSellStartTime())
+                            .sellEndTime(window.getSellEndTime())
+                            .validType(window.getValidType())
+                            .validDays(window.getValidDays())
+                            .useStartTime(window.getUseStartTime())
+                            .useEndTime(window.getUseEndTime())
+                            .stock(window.getStock())
+                            .status(window.getStatus())
+                            .onSaleNow(window.getStatus() != null && window.getStatus() == 1
+                                    && (window.getSellEndTime() == null || window.getSellEndTime().isAfter(now)))
+                            .build());
+        }
+
+        // ===== 整页的会教教练一次查完 =====
+        List<CoachCourse> coachRelations = coachCourseMapper.selectList(
+                new LambdaQueryWrapper<CoachCourse>().in(CoachCourse::getCourseId, courseIds));
+        Map<Long, List<Long>> coachesByCourse = new HashMap<>();
+        for (CoachCourse relation : coachRelations) {
+            coachesByCourse.computeIfAbsent(relation.getCourseId(), k -> new ArrayList<>())
+                    .add(relation.getCoachId());
+        }
 
         List<CourseAdminDTO> rows = new ArrayList<>();
         for (Course course : result.getRecords()) {
-            rows.add(toAdminDTO(course, storeCountMap.getOrDefault(course.getId(), 0)));
+            List<CourseWindowAdminDTO> courseWindows =
+                    windowsByCourse.getOrDefault(course.getId(), List.of());
+            List<Long> coachIds = coachesByCourse.getOrDefault(course.getId(), List.of());
+            rows.add(toAdminDTO(course, courseWindows.size(), coachIds, courseWindows));
         }
         return PageDTO.of(rows, result.getTotal());
     }
@@ -660,6 +717,179 @@ public class CourseServiceImpl implements CourseService {
     }
 
     // =====================================================================
+    // 管理端：两层时间窗
+    // =====================================================================
+
+    /** 凭证有效期的三种取值（与 {@code t_course_store.valid_type} 一致） */
+    private static final String VALID_FOREVER = "FOREVER";
+    private static final String VALID_DAYS = "DAYS";
+    private static final String VALID_RANGE = "RANGE";
+
+    @Override
+    public PageDTO<CourseWindowAdminDTO> adminWindowPage(Long courseId, Long storeId,
+                                                         Integer page, Integer size) {
+        LambdaQueryWrapper<CourseStore> wrapper = new LambdaQueryWrapper<CourseStore>()
+                .eq(courseId != null, CourseStore::getCourseId, courseId)
+                .eq(storeId != null, CourseStore::getStoreId, storeId)
+                .orderByAsc(CourseStore::getCourseId)
+                .orderByAsc(CourseStore::getStoreId);
+
+        Page<CourseStore> pageParam = new Page<>(page == null || page < 1 ? 1 : page,
+                size == null || size < 1 ? 10 : Math.min(size, 50));
+        courseStoreMapper.selectPage(pageParam, wrapper);
+        List<CourseStore> records = pageParam.getRecords();
+        if (records.isEmpty()) {
+            return PageDTO.of(List.of(), pageParam.getTotal());
+        }
+
+        // ===== 整页要补的两个名字，各一次批量查（★不在循环里 selectById）=====
+        Set<Long> courseIds = records.stream().map(CourseStore::getCourseId).collect(Collectors.toSet());
+        Map<Long, String> courseNames = courseMapper.selectBatchIds(courseIds).stream()
+                .collect(Collectors.toMap(Course::getId, Course::getName));
+        Set<Long> storeIds = records.stream().map(CourseStore::getStoreId).collect(Collectors.toSet());
+        Map<Long, String> storeNames = storeMapper.selectBatchIds(storeIds).stream()
+                .collect(Collectors.toMap(Store::getId, Store::getName));
+
+        LocalDateTime now = LocalDateTime.now();
+        List<CourseWindowAdminDTO> rows = new ArrayList<>();
+        for (CourseStore window : records) {
+            // ★onSaleNow 是算出来的、库里没有这一列：下架状态或停售时间已过都算"不在售"。
+            //   放在服务端算而不是前端算，是为了让"在售"这件事全站只有一个定义
+            boolean onSaleNow = window.getStatus() != null && window.getStatus() == 1
+                    && (window.getSellEndTime() == null || window.getSellEndTime().isAfter(now));
+            rows.add(CourseWindowAdminDTO.builder()
+                    .id(window.getId())
+                    .courseId(window.getCourseId())
+                    .courseName(courseNames.get(window.getCourseId()))
+                    .storeId(window.getStoreId())
+                    .storeName(storeNames.get(window.getStoreId()))
+                    .sellStartTime(window.getSellStartTime())
+                    .sellEndTime(window.getSellEndTime())
+                    .validType(window.getValidType())
+                    .validDays(window.getValidDays())
+                    .useStartTime(window.getUseStartTime())
+                    .useEndTime(window.getUseEndTime())
+                    .stock(window.getStock())
+                    .status(window.getStatus())
+                    .onSaleNow(onSaleNow)
+                    .build());
+        }
+        return PageDTO.of(rows, pageParam.getTotal());
+    }
+
+    @Override
+    public void adminWindowSave(CourseWindowSaveDTO dto) {
+        // ===== 第 1 步：只能改已存在的关系行 =====
+        CourseStore window = courseStoreMapper.selectById(dto.getId());
+        if (window == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "该课程与门店的关系不存在，请先在课程表单里保存门店");
+        }
+
+        // ===== 第 2 步：跨字段校验（注解表达不了"条件必填"和区间先后）=====
+        if (dto.getSellEndTime() != null && !dto.getSellEndTime().isAfter(dto.getSellStartTime())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "停售时间必须晚于开售时间");
+        }
+        String validType = dto.getValidType() == null ? "" : dto.getValidType().trim().toUpperCase();
+        Integer validDays = null;
+        LocalDateTime useStart = null;
+        LocalDateTime useEnd = null;
+        switch (validType) {
+            case VALID_FOREVER -> {
+                // 永不过期：凭证的 validUntil 会存 null，所以所有过期判断都要带 IS NOT NULL
+                validDays = null;
+            }
+            case VALID_DAYS -> {
+                if (dto.getValidDays() == null || dto.getValidDays() <= 0) {
+                    throw new BusinessException(ErrorCode.PARAM_ERROR, "选择「领后 N 天」时必须填写天数");
+                }
+                validDays = dto.getValidDays();
+            }
+            case VALID_RANGE -> {
+                if (dto.getUseStartTime() == null || dto.getUseEndTime() == null) {
+                    throw new BusinessException(ErrorCode.PARAM_ERROR, "选择「固定起止窗口」时必须同时给起止时间");
+                }
+                if (!dto.getUseEndTime().isAfter(dto.getUseStartTime())) {
+                    throw new BusinessException(ErrorCode.PARAM_ERROR, "可使用截止时间必须晚于起始时间");
+                }
+                useStart = dto.getUseStartTime();
+                useEnd = dto.getUseEndTime();
+            }
+            // ★default 直接拒绝而不是当成 FOREVER 兜过去：有效期类型传错如果被静默降级，
+            // 后果是"常年课被设成 30 天过期"或反过来，属于会退款扯皮的错，必须当场面红耳赤地报出来
+            default -> throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "有效期类型只能是 FOREVER / DAYS / RANGE");
+        }
+
+        // ===== 第 3 步：整行覆盖式更新（三个分支没选中的字段就是 null，正好把上一轮的残留清掉）=====
+        window.setSellStartTime(dto.getSellStartTime());
+        window.setSellEndTime(dto.getSellEndTime());
+        window.setValidType(validType);
+        window.setValidDays(validDays);
+        window.setUseStartTime(useStart);
+        window.setUseEndTime(useEnd);
+        window.setStock(dto.getStock());
+        window.setStatus(dto.getStatus() == null ? window.getStatus() : dto.getStatus());
+        window.setUpdatedAt(LocalDateTime.now());
+        courseStoreMapper.updateById(window);
+
+        // ===== 第 4 步：窗口变了，课程详情缓存必须失效（可售状态、最近可购时间都在里面）=====
+        redis.delete(RedisKeyConstants.courseDetail(window.getCourseId()));
+        log.info("时间窗已更新: id={}, courseId={}, storeId={}",
+                window.getId(), window.getCourseId(), window.getStoreId());
+    }
+
+    // =====================================================================
+    // 管理端：看板计数
+    // =====================================================================
+
+    @Override
+    public AdminCountDTO adminCount() {
+        long courseCount = courseMapper.selectCount(new LambdaQueryWrapper<Course>()
+                .eq(Course::getStatus, 1));
+        long storeCount = storeMapper.selectCount(new LambdaQueryWrapper<Store>()
+                .eq(Store::getStatus, 1));
+
+        // 教练只有几十位量级，一次查出来在内存里判"今天上不上班"。
+        // ★没有把 workDays 拆成表或位图：那是为一万位教练准备的方案，这里读一次全表比
+        //   多建一张表再维护同步便宜得多
+        List<Coach> bookableCoaches = coachMapper.selectList(new LambdaQueryWrapper<Coach>()
+                .eq(Coach::getStatus, 1));
+        int todayOfWeek = LocalDate.now().getDayOfWeek().getValue();   // 1=周一 … 7=周日
+        int slotTotal = 0;
+        for (Coach coach : bookableCoaches) {
+            if (!workDaysContains(coach.getWorkDays(), todayOfWeek)) {
+                continue;   // 今天休息的教练不进分母，否则占用率被稀释
+            }
+            Integer start = coach.getWorkStartHour();
+            Integer end = coach.getWorkEndHour();
+            if (start != null && end != null && end > start) {
+                slotTotal += end - start;
+            }
+        }
+
+        return AdminCountDTO.builder()
+                .courseCount((int) courseCount)
+                .coachCount(bookableCoaches.size())
+                .storeCount((int) storeCount)
+                .todaySlotTotal(slotTotal)
+                .build();
+    }
+
+    /** workDays 是 "1,3,5" 这样的串；为空按"全周可约"处理（与 CoachServiceImpl 的默认值同口径） */
+    private boolean workDaysContains(String workDays, int dayOfWeek) {
+        if (workDays == null || workDays.isBlank()) {
+            return true;
+        }
+        for (String part : workDays.split(",")) {
+            if (part.trim().equals(String.valueOf(dayOfWeek))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // =====================================================================
     // 私有工具
     // =====================================================================
 
@@ -708,7 +938,8 @@ public class CourseServiceImpl implements CourseService {
     }
 
     /** 实体 → 管理端行 DTO（列表展示 + 编辑回填） */
-    private CourseAdminDTO toAdminDTO(Course course, int storeCount) {
+    private CourseAdminDTO toAdminDTO(Course course, int storeCount, List<Long> coachIds,
+                                      List<CourseWindowAdminDTO> storeWindows) {
         return CourseAdminDTO.builder()
                 .id(course.getId())
                 .name(course.getName())
@@ -727,6 +958,9 @@ public class CourseServiceImpl implements CourseService {
                 .suitable(course.getSuitable())
                 .status(course.getStatus())
                 .storeCount(storeCount)
+                .coachCount(coachIds.size())
+                .coachIds(coachIds)
+                .storeWindows(storeWindows)
                 .build();
     }
 

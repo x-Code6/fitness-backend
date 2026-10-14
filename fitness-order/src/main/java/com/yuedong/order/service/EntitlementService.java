@@ -1,5 +1,7 @@
 package com.yuedong.order.service;
 
+import com.yuedong.common.model.PageDTO;
+import com.yuedong.order.api.dto.EntitlementAdminDTO;
 import com.yuedong.order.model.entity.Booking;
 import com.yuedong.order.model.entity.Entitlement;
 import com.yuedong.order.model.vo.EntitlementVO;
@@ -73,4 +75,30 @@ public interface EntitlementService {
      * @return 本轮处理的凭证张数（任务日志用）
      */
     int expireOverdue();
+
+    /**
+     * 管理端：凭证分页。
+     *
+     * @param status  ACTIVE / USED_UP / EXPIRED；null 或 ALL = 全部
+     * @param keyword 模糊匹配订单号与课程名（<b>不含会员昵称</b>：昵称在 yd_user，跨库 LIKE 不了）
+     * @param userId  指定会员，可为 null
+     */
+    PageDTO<EntitlementAdminDTO> adminPage(
+            String status, String keyword, Long userId, Integer page, Integer size);
+
+    /**
+     * 实体 → 管理端 DTO。<b>公开理由与 {@link #toVO} 同一条</b>：
+     * 订单详情里那一串凭证要用同一份"剩余次数怎么算、长期有效怎么显示"的口径，
+     * 私有的话就得在详情里再拼一遍，两处迟早分叉。
+     */
+    EntitlementAdminDTO toAdminDTO(Entitlement entitlement);
+
+    /**
+     * 给一批管理端凭证行补"已约几次"。
+     *
+     * <p>★单独一步而不是塞进 {@link #toAdminDTO}：那个方法一次只转一张，
+     * 而预约数必须<b>整页一次 GROUP BY</b> 才便宜。
+     * 凭证分页和订单详情两处都要这个数，所以规则放在这里而不是各写一遍。</p>
+     */
+    void fillReservationCounts(List<EntitlementAdminDTO> rows);
 }

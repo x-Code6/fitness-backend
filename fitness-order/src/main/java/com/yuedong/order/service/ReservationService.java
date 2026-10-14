@@ -1,6 +1,9 @@
 package com.yuedong.order.service;
 
+import com.yuedong.common.model.PageDTO;
+import com.yuedong.order.api.dto.ReservationAdminDTO;
 import com.yuedong.order.model.dto.ReservationCreateDTO;
+import com.yuedong.order.model.entity.Reservation;
 import com.yuedong.order.model.vo.ReservationVO;
 
 import java.util.List;
@@ -59,4 +62,36 @@ public interface ReservationService {
      * @return 本轮结账的预约张数
      */
     int settleDue();
+
+    // =====================================================================
+    // 管理端（分页 / 按码核销 / 删教练前置判断）
+    // =====================================================================
+
+    /**
+     * 管理端：预约分页。
+     *
+     * @param status  BOOKED / FINISHED / CANCELED，null 或 ALL 表示全部
+     * @param coachId 按教练筛
+     * @param storeId 按门店筛
+     * @param date    某一天（yyyy-MM-dd）。★按 {@code start_time} 落在当天判，
+     *                用 [当天00:00, 次日00:00) 的<b>闭开区间</b>而不是 DATE(start_time)=? ——
+     *                对列套函数会让索引失效，一天一约的表也会扫全表
+     * @param keyword 预约单号 / 订单号 / 课程名 / 教练名 模糊
+     */
+    PageDTO<ReservationAdminDTO> adminPage(String status, Long coachId, Long storeId,
+                                          String date, String keyword, Integer page, Integer size);
+
+    /**
+     * 管理端：按核销码登记到店。
+     * <p>★内部直接复用 {@link #verify(String)} 而不是重写一遍：
+     * "一码一次"靠的是 {@code verified_at IS NULL} 这个 CAS 条件，写两遍就有一遍会漏。
+     * 复用之后多查一次实体换回"规则只有一份"，这笔账在任何量级上都划算。</p>
+     */
+    ReservationAdminDTO adminVerify(String verifyCode);
+
+    /** 某教练是否还有未开始的预约（删教练前的前置判断，见 BookingClient 的注释） */
+    boolean hasFutureByCoach(Long coachId);
+
+    /** 实体 → 管理端 DTO（公开理由同 {@code EntitlementService#toAdminDTO}） */
+    ReservationAdminDTO toAdminDTO(Reservation reservation);
 }

@@ -50,4 +50,10 @@ public class InnerUserController {
         userService.adminSetStatus(id, status);
         return Result.ok();
     }
+
+    /** 管理端看板：正常会员总数（禁用不计入，口径见 UserService#countEnabled） */
+    @GetMapping("/admin/count")
+    public Result<Long> adminCount() {
+        return Result.ok(userService.countEnabled());
+    }
 }

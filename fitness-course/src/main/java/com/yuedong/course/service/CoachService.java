@@ -1,6 +1,8 @@
 package com.yuedong.course.service;
 
-import com.yuedong.course.model.dto.CoachSaveDTO;
+import com.yuedong.common.model.PageDTO;
+import com.yuedong.course.api.dto.CoachAdminDTO;
+import com.yuedong.course.api.dto.CoachSaveDTO;
 import com.yuedong.course.model.entity.Coach;
 import com.yuedong.course.model.vo.CoachVO;
 
@@ -66,4 +68,27 @@ public interface CoachService {
      * <p>不做分页：一家店教练几十位，量级不值得分页；真要加再说。</p>
      */
     List<Coach> listByStore(Long storeId);
+
+    /**
+     * 管理端：教练分页（门店/状态/性别/关键词）。
+     *
+     * <p>★一页数据要拼三处：t_coach 本身、t_store 的名字、t_coach_course 的配课情况。
+     * 后两者都<b>按本页的 coachId 一次批量查</b>，不在循环里逐条查——
+     * 一页 10 条就是 10 次查询那种写法，翻页一多就是几十次空转。</p>
+     */
+    PageDTO<CoachAdminDTO> adminPage(
+            Long storeId, Integer status, Integer gender, String keyword, Integer page, Integer size);
+
+    /** 管理端：启用/停用教练。停用不影响历史预约（预约单上存的是教练名快照） */
+    void adminStatus(Long id, Integer status);
+
+    /**
+     * 管理端：删除教练（连配课关系一起删，同一本地事务）。
+     *
+     * <p>★"该教练是否还有未完成的预约"<b>不在这里判</b>：那张表在 yd_order，跨库查不到，
+     * 而且为了这个判断让 course 反向依赖 order，两个服务就缠死了。
+     * 由 admin-server 先问 order、通过后再调本方法（BFF 编排）。
+     * 删掉之后历史预约仍然显示教练名，因为 {@code t_reservation.coach_name} 是快照。</p>
+     */
+    void adminDelete(Long id);
 }

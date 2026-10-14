@@ -1,9 +1,12 @@
 package com.yuedong.course.service;
 
+import com.yuedong.course.api.dto.AdminCountDTO;
 import com.yuedong.course.api.dto.CourseAdminDTO;
 import com.yuedong.course.api.dto.CourseDTO;
 import com.yuedong.course.api.dto.CourseSaveDTO;
 import com.yuedong.course.api.dto.CourseStoreKeyDTO;
+import com.yuedong.course.api.dto.CourseWindowAdminDTO;
+import com.yuedong.course.api.dto.CourseWindowSaveDTO;
 import com.yuedong.course.model.entity.Course;
 import com.yuedong.course.model.entity.SeckillActivity;
 import com.yuedong.course.model.vo.CourseVO;
@@ -80,7 +83,8 @@ public interface CourseService {
     // =====================================================================
 
     /** 管理端：课程分页 */
-    PageDTO<CourseAdminDTO> adminPage(String type, String keyword, Integer page, Integer size);
+    PageDTO<CourseAdminDTO> adminPage(String type, String kind, Integer status,
+                                      String keyword, Integer page, Integer size);
 
     /** 管理端：新增/修改课程（★不含可售门店配置，那部分由 course-store 维护接口单独做） */
     void adminSave(CourseSaveDTO dto);
@@ -105,4 +109,26 @@ public interface CourseService {
      * @param storeIds 门店 id 列表；空集合表示下架全部门店（课相当于是不可购买状态）
      */
     void adminAssignStores(Long courseId, List<Long> storeIds);
+
+    /**
+     * 管理端：课程 × 门店时间窗分页（docs 里的"两层时间"那一格，本期补上）。
+     *
+     * <p>{@code assignStores} 只负责"这门课在哪家店卖"（建关系、给默认窗口），
+     * 这里负责"在一家店怎么卖"（改窗口）。★拆成两个接口是因为它们的写形状不同：
+     * 前者先删后插整组、后者只改一行；合成一个接口就会出现
+     * "改个停售时间顺手把别的门店配置清了"的事故。</p>
+     */
+    PageDTO<CourseWindowAdminDTO> adminWindowPage(Long courseId, Long storeId, Integer page, Integer size);
+
+    /** 管理端：保存某门课在某家店的售卖窗口与凭证有效期 */
+    void adminWindowSave(CourseWindowSaveDTO dto);
+
+    /**
+     * 管理端看板：课程侧计数（在售课 / 可约教练 / 营业门店 / 今日应开放时段格子）。
+     *
+     * <p>★{@code todaySlotTotal} 的口径见 {@code AdminCountDTO} 注释：
+     * 只算<b>今天上班</b>的可约教练，每人 {@code workEndHour - workStartHour} 个整点。
+     * 这是"占用率"的分母，和 order 那边的分子（已占格子数）必须同单位。</p>
+     */
+    AdminCountDTO adminCount();
 }

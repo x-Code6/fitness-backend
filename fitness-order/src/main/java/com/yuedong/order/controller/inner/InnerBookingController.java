@@ -2,7 +2,10 @@ package com.yuedong.order.controller.inner;
 
 import com.yuedong.common.model.PageDTO;
 import com.yuedong.common.result.Result;
+import com.yuedong.order.api.dto.AdminStatDTO;
 import com.yuedong.order.api.dto.BookingDTO;
+import com.yuedong.order.api.dto.OrderAdminDetailDTO;
+import com.yuedong.order.service.AdminStatService;
 import com.yuedong.order.service.BookingService;
 import jakarta.validation.constraints.NotBlank;
 import lombok.RequiredArgsConstructor;
@@ -26,6 +29,7 @@ import java.util.List;
 public class InnerBookingController {
 
     private final BookingService bookingService;
+    private final AdminStatService adminStatService;
 
     /** 管理端：订单分页（全用户，状态/关键词筛选） */
     @GetMapping("/admin/page")
@@ -47,5 +51,17 @@ public class InnerBookingController {
     public Result<Void> adminCancel(@RequestParam String orderNo) {
         bookingService.adminCancel(orderNo);
         return Result.ok();
+    }
+
+    /** 管理端：订单详情（订单 + 凭证 + 预约三条轴一次给全） */
+    @GetMapping("/admin/detail")
+    public Result<OrderAdminDetailDTO> adminDetail(@RequestParam String orderNo) {
+        return Result.ok(bookingService.adminDetail(orderNo));
+    }
+
+    /** 管理端：看板统计（订单侧那一半；课程/user 各补另一半，由 admin-server 拼） */
+    @GetMapping("/admin/stat")
+    public Result<AdminStatDTO> adminStat() {
+        return Result.ok(adminStatService.stat());
     }
 }

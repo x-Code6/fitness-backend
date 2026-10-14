@@ -1,14 +1,20 @@
 package com.yuedong.course.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.yuedong.common.exception.BusinessException;
+import com.yuedong.common.model.PageDTO;
 import com.yuedong.common.result.ErrorCode;
+import com.yuedong.course.api.dto.CoachAdminDTO;
 import com.yuedong.course.mapper.CoachCourseMapper;
 import com.yuedong.course.mapper.CoachMapper;
 import com.yuedong.course.mapper.CourseMapper;
-import com.yuedong.course.model.dto.CoachSaveDTO;
+import com.yuedong.course.mapper.StoreMapper;
+import com.yuedong.course.api.dto.CoachSaveDTO;
 import com.yuedong.course.model.entity.Coach;
 import com.yuedong.course.model.entity.CoachCourse;
+import com.yuedong.course.model.entity.Course;
+import com.yuedong.course.model.entity.Store;
 import com.yuedong.course.model.vo.CoachVO;
 import com.yuedong.course.service.CoachService;
 import lombok.RequiredArgsConstructor;
@@ -19,7 +25,11 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -41,6 +51,7 @@ public class CoachServiceImpl implements CoachService {
     private final CoachMapper coachMapper;
     private final CoachCourseMapper coachCourseMapper;
     private final CourseMapper courseMapper;
+    private final StoreMapper storeMapper;
 
     @Override
     public List<CoachVO> listByCourseAndStore(Long courseId, Long storeId) {
@@ -198,5 +209,131 @@ public class CoachServiceImpl implements CoachService {
     /** 空字符串与 null 一律回退到默认值（头像配色这类"没填就要给个默认"的字段） */
     private String blankToDefault(String value, String defaultValue) {
         return (value == null || value.isBlank()) ? defaultValue : value;
+    }
+
+    // =====================================================================
+    // 管理端：分页 / 启停 / 删除
+    // =====================================================================
+
+    @Override
+    public PageDTO<CoachAdminDTO> adminPage(Long storeId, Integer status, Integer gender,
+                                            String keyword, Integer page, Integer size) {
+        // ===== 第 1 步：条件分页查 t_coach 本体 =====
+        // ★四个筛选项全都用 eq/like，且都带"传了才加条件"的布尔开关：
+        //   MyBatis-Plus 的 (boolean condition, column, value) 重载就是为这种筛选表单准备的，
+        //   写成 if 分支拼字符串会难读十倍
+        LambdaQueryWrapper<Coach> wrapper = new LambdaQueryWrapper<Coach>()
+                .eq(storeId != null, Coach::getStoreId, storeId)
+                .eq(status != null, Coach::getStatus, status)
+                .eq(gender != null, Coach::getGender, gender);
+        if (keyword != null && !keyword.isBlank()) {
+            String kw = keyword.trim();
+            // ★四个字段包在一个括号里（.and(...)）：不加括号的话后面再挂任何 eq 条件，
+            // 都会被 OR 抢走作用域，筛出比预期多一倍的数据——这是 LIKE 多字段搜索最常踩的坑
+            wrapper.and(item -> item.like(Coach::getName, kw)
+                    .or().like(Coach::getTitle, kw)
+                    .or().like(Coach::getIntro, kw)
+                    .or().like(Coach::getPhone, kw));
+        }
+        wrapper.orderByDesc(Coach::getId);
+
+        Page<Coach> pageParam = new Page<>(page == null || page < 1 ? 1 : page,
+                size == null || size < 1 ? 10 : Math.min(size, 50));
+        coachMapper.selectPage(pageParam, wrapper);
+        List<Coach> records = pageParam.getRecords();
+        if (records.isEmpty()) {
+            return PageDTO.of(List.of(), pageParam.getTotal());
+        }
+
+        // ===== 第 2 步：整页要补的两份关联数据，各一次批量查 =====
+        List<Long> coachIds = records.stream().map(Coach::getId).toList();
+        // 2a 配课关系：WHERE coach_id IN (本页) —— 走 uk_coach_course 最左前缀
+        List<CoachCourse> relations = coachCourseMapper.selectList(
+                new LambdaQueryWrapper<CoachCourse>().in(CoachCourse::getCoachId, coachIds));
+        // 2b 课程名：关系里出现的 courseId 去重后一次查。★不在上面循环里逐条 selectById
+        Set<Long> courseIds = relations.stream().map(CoachCourse::getCourseId).collect(Collectors.toSet());
+        Map<Long, String> courseNames = courseIds.isEmpty() ? Map.of()
+                : courseMapper.selectList(new LambdaQueryWrapper<Course>().in(Course::getId, courseIds))
+                .stream().collect(Collectors.toMap(Course::getId, Course::getName));
+        // 2c 门店名：selectBatchIds 主键批查，十条一页就一次往返
+        Set<Long> storeIds = records.stream().map(Coach::getStoreId).collect(Collectors.toSet());
+        Map<Long, String> storeNames = storeMapper.selectBatchIds(storeIds).stream()
+                .collect(Collectors.toMap(Store::getId, Store::getName));
+
+        // ===== 第 3 步：按 coachId 把关系分好组再贴回每一行 =====
+        Map<Long, List<Long>> coursesByCoach = new HashMap<>();
+        for (CoachCourse relation : relations) {
+            coursesByCoach.computeIfAbsent(relation.getCoachId(), k -> new ArrayList<>())
+                    .add(relation.getCourseId());
+        }
+
+        List<CoachAdminDTO> rows = new ArrayList<>();
+        for (Coach coach : records) {
+            List<Long> ids = coursesByCoach.getOrDefault(coach.getId(), List.of());
+            rows.add(CoachAdminDTO.builder()
+                    .id(coach.getId())
+                    .storeId(coach.getStoreId())
+                    .storeName(storeNames.get(coach.getStoreId()))
+                    .name(coach.getName())
+                    .title(coach.getTitle())
+                    .intro(coach.getIntro())
+                    .phone(coach.getPhone())
+                    .avatarImage(coach.getAvatarImage())
+                    .avatarColor(coach.getAvatarColor())
+                    .gender(coach.getGender())
+                    .workStartHour(coach.getWorkStartHour())
+                    .workEndHour(coach.getWorkEndHour())
+                    .workDays(parseWorkDays(coach.getWorkDays()))
+                    .status(coach.getStatus())
+                    .courseCount(ids.size())
+                    .courseNames(ids.stream().map(courseNames::get).filter(Objects::nonNull)
+                            .collect(Collectors.joining("、")))
+                    .courseIds(ids)
+                    .build());
+        }
+        return PageDTO.of(rows, pageParam.getTotal());
+    }
+
+    @Override
+    public void adminStatus(Long id, Integer status) {
+        Coach update = new Coach();
+        update.setId(id);
+        update.setStatus(status);
+        update.setUpdatedAt(LocalDateTime.now());
+        // ★影响 0 行 = 这个 id 不存在。不能沉默返回成功，否则管理端"停用"点了没反应也看不出来
+        if (coachMapper.updateById(update) == 0) {
+            throw new BusinessException(ErrorCode.COACH_NOT_FOUND);
+        }
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void adminDelete(Long id) {
+        // ===== 第 1 步：教练本体必须存在 =====
+        if (coachMapper.selectById(id) == null) {
+            throw new BusinessException(ErrorCode.COACH_NOT_FOUND);
+        }
+
+        // ===== 第 2 步：先删配课关系，再删教练。同一事务，两步要么都成要么都回 =====
+        // ★顺序上没有讲究（同事务），但"先删关系"读起来符合"先拆依赖再拆主体"的直觉
+        coachCourseMapper.delete(new LambdaQueryWrapper<CoachCourse>().eq(CoachCourse::getCoachId, id));
+        coachMapper.deleteById(id);
+        log.info("删除教练: id={}", id);
+    }
+
+    /** 库里的 "1,3,5" 串转成 [1,3,5]；脏值跳过而不是整条报错（管理端列表不该因为一个字符崩掉） */
+    private List<Integer> parseWorkDays(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return List.of();
+        }
+        List<Integer> days = new ArrayList<>();
+        for (String part : raw.split(",")) {
+            try {
+                days.add(Integer.parseInt(part.trim()));
+            } catch (NumberFormatException ignore) {
+                // 脏的星期值忽略即可
+            }
+        }
+        return days;
     }
 }

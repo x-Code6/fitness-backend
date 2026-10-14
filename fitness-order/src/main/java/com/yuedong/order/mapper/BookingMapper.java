@@ -2,10 +2,15 @@ package com.yuedong.order.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.yuedong.order.model.entity.Booking;
+import com.yuedong.order.model.vo.HotCourseRow;
+import com.yuedong.order.model.vo.TrendRow;
 import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.List;
 
 /**
  * 订单表 Mapper。
@@ -88,4 +93,52 @@ public interface BookingMapper extends BaseMapper<Booking> {
     @Update("UPDATE t_booking SET status = 'REFUNDED', refunded = 1, refund_at = #{now} " +
             "WHERE order_no = #{orderNo} AND status = 'PAID'")
     int markRefunded(@Param("orderNo") String orderNo, @Param("now") LocalDateTime now);
+
+    // =====================================================================
+    // 看板统计（docs 4.12 之外的管理端只读聚合）
+    // ★三条都是"一条 SQL 出一个数/一页榜"，不在 Java 里捞一批再 stream 求和：
+    //   订单表会一直长，捞全表进内存求和是最先爆掉的那一处
+    // =====================================================================
+
+    /**
+     * 某状态订单在 {@code [start, end)} 区间的实付合计。
+     * <p>COALESCE 是必需的：一天没有成交时 SUM 返回 <b>NULL</b> 而不是 0，
+     * 直接接进 BigDecimal 会让看板显示空白甚至炸一次。</p>
+     */
+    @Select("SELECT COALESCE(SUM(pay_amount), 0) FROM t_booking" +
+            " WHERE status = #{status} AND created_at >= #{start} AND created_at < #{end}")
+    BigDecimal sumPayAmount(@Param("status") String status,
+                            @Param("start") LocalDateTime start,
+                            @Param("end") LocalDateTime end);
+
+    /** 累计退款金额（REFUNDED 单的实付合计，没有时间窗：退款口径是"到目前为止"） */
+    @Select("SELECT COALESCE(SUM(pay_amount), 0) FROM t_booking WHERE status = 'REFUNDED'")
+    BigDecimal sumRefundedAmount();
+
+    /**
+     * 近 N 天热销课 TopN。
+     * <p>★课程名用的是订单表自己的 {@code course_name} 快照列，<b>不回查课程服务</b>：
+     * 排行榜要的是"当时卖出去的那门课叫什么"，而且少一次跨服务调用。</p>
+     */
+    @Select("SELECT course_name AS name, SUM(quantity) AS sold FROM t_booking" +
+            " WHERE status = 'PAID' AND created_at >= DATE_SUB(NOW(), INTERVAL #{days} DAY)" +
+            " GROUP BY course_name ORDER BY sold DESC LIMIT #{limit}")
+    List<HotCourseRow> selectHotCourses(@Param("days") int days, @Param("limit") int limit);
+
+    /**
+     * 近 N 天每日成交趋势。
+     * <p>★{@code amount} 只算 PAID、{@code order_count} 算全部状态：
+     * 看板上"金额"和"单量"两条线的口径本来就不一样（未支付/已退款的单也是单），
+     * 把两者都限定成 PAID 反而会让人误读成"今天没人下单"。</p>
+     * <p>按 {@code DATE(created_at)} 分组而不是按小时：趋势图横轴是"天"，
+     * 按小时分组要多传一个参数、前端也要多一层格式化，没有收益。</p>
+     */
+    @Select("SELECT DATE_FORMAT(created_at, '%m-%d') AS date," +
+            "       COALESCE(SUM(CASE WHEN status = 'PAID' THEN pay_amount ELSE 0 END), 0) AS amount," +
+            "       COUNT(*) AS order_count" +
+            "  FROM t_booking" +
+            " WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL #{days} DAY)" +
+            " GROUP BY DATE(created_at)" +
+            " ORDER BY DATE(created_at)")
+    List<TrendRow> selectTrend(@Param("days") int days);
 }
