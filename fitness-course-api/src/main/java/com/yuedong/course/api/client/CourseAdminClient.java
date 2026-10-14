@@ -2,6 +2,13 @@ package com.yuedong.course.api.client;
 
 import com.yuedong.common.model.PageDTO;
 import com.yuedong.common.result.Result;
+import com.yuedong.course.api.dto.AdminCountDTO;
+import com.yuedong.course.api.dto.CoachAdminDTO;
+import com.yuedong.course.api.dto.CoachSaveDTO;
+import com.yuedong.course.api.dto.CourseAdminDTO;
+import com.yuedong.course.api.dto.CourseSaveDTO;
+import com.yuedong.course.api.dto.CourseWindowAdminDTO;
+import com.yuedong.course.api.dto.CourseWindowSaveDTO;
 import com.yuedong.course.api.dto.CouponAdminDTO;
 import com.yuedong.course.api.dto.CouponSaveDTO;
 import com.yuedong.course.api.dto.CourseAdminDTO;
@@ -32,9 +39,18 @@ public interface CourseAdminClient {
 
     // ---------- 课程 ----------
 
-    /** 课程分页（类型/关键词筛选） */
+    /**
+     * 课程分页。
+     *
+     * @param type    课程分类（瑜伽/搏击…），"全部"或不传表示不按分类筛
+     * @param kind    SALE 可售课 / CONTENT 展示课
+     * @param status  1 上架 / 0 下架
+     * @param keyword 课程名模糊
+     */
     @GetMapping("/inner/course/admin/page")
     Result<PageDTO<CourseAdminDTO>> coursePage(@RequestParam("type") String type,
+                                               @RequestParam("kind") String kind,
+                                               @RequestParam("status") Integer status,
                                                @RequestParam("keyword") String keyword,
                                                @RequestParam("page") Integer page,
                                                @RequestParam("size") Integer size);
@@ -101,4 +117,63 @@ public interface CourseAdminClient {
 
     @PostMapping("/inner/store/delete")
     Result<Void> storeDelete(@RequestParam("id") Long id);
+
+    // ---------- 教练 ----------
+
+    /**
+     * 教练分页（门店/状态/性别/关键词四个筛选位）。
+     *
+     * @param keyword 模糊匹配姓名/资质/简介/电话，四个字段用 OR 拼在一个括号里
+     */
+    @GetMapping("/inner/coach/admin/page")
+    Result<PageDTO<CoachAdminDTO>> coachPage(@RequestParam("storeId") Long storeId,
+                                             @RequestParam("status") Integer status,
+                                             @RequestParam("gender") Integer gender,
+                                             @RequestParam("keyword") String keyword,
+                                             @RequestParam("page") Integer page,
+                                             @RequestParam("size") Integer size);
+
+    /** 新增/修改教练。★返回教练 id：新增后前端要立刻拿它去配课 */
+    @PostMapping("/inner/coach/save")
+    Result<Long> coachSave(@Valid @RequestBody CoachSaveDTO dto);
+
+    /** 启用/停用 */
+    @PostMapping("/inner/coach/admin/status")
+    Result<Void> coachStatus(@RequestParam("id") Long id, @RequestParam("status") Integer status);
+
+    /**
+     * 删除教练（物理删 + 清配课）。
+     *
+     * <p>★"有没有未完成的预约"这个前置判断<b>不在这里</b>：预约表在 yd_order，
+     * 课程服务查不到。由 admin-server 先问 order 再调这个接口 ——
+     * 跨库校验交给 BFF 编排，比让 course 反向依赖 order 干净。</p>
+     */
+    @PostMapping("/inner/coach/admin/delete")
+    Result<Void> coachDelete(@RequestParam("id") Long id);
+
+    /** 某教练已配课程 id（表单回显） */
+    @GetMapping("/inner/coach/course-ids")
+    Result<List<Long>> coachCourseIds(@RequestParam("coachId") Long coachId);
+
+    /** 整体替换某教练的可授课范围；body 传空数组=清空，null 被服务层拒绝 */
+    @PostMapping("/inner/coach/assign-course")
+    Result<Void> coachAssignCourse(@RequestParam("coachId") Long coachId,
+                                   @RequestBody List<Long> courseIds);
+
+    // ---------- 课程 × 门店两层时间窗 ----------
+
+    /** 窗口分页（按课程或按门店筛，两个都不传就是全量） */
+    @GetMapping("/inner/course/admin/window/page")
+    Result<PageDTO<CourseWindowAdminDTO>> windowPage(@RequestParam("courseId") Long courseId,
+                                                     @RequestParam("storeId") Long storeId,
+                                                     @RequestParam("page") Integer page,
+                                                     @RequestParam("size") Integer size);
+
+    /** 保存某门课在某家店的售卖窗口与有效期 */
+    @PostMapping("/inner/course/admin/window/save")
+    Result<Void> windowSave(@Valid @RequestBody CourseWindowSaveDTO dto);
+
+    /** 管理端看板：课程侧计数（在售课 / 可约教练 / 营业门店 / 今日应开放时段格子） */
+    @GetMapping("/inner/course/admin/count")
+    Result<AdminCountDTO> adminCount();
 }

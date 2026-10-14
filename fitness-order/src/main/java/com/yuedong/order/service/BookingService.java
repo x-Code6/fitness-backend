@@ -2,6 +2,7 @@ package com.yuedong.order.service;
 
 import com.yuedong.common.model.PageDTO;
 import com.yuedong.order.api.dto.BookingDTO;
+import com.yuedong.order.api.dto.OrderAdminDetailDTO;
 import com.yuedong.order.model.dto.BookingCreateDTO;
 import com.yuedong.order.model.vo.BookingDetailVO;
 import com.yuedong.order.model.vo.BookingVO;
@@ -76,4 +77,13 @@ public interface BookingService {
 
     /** 管理端：代客取消未支付订单 */
     void adminCancel(String orderNo);
+
+    /**
+     * 管理端：订单详情，<b>三条轴一次给全</b>（订单 + 该单凭证 + 该单预约）。
+     *
+     * <p>★三张表都在 yd_order，所以由本服务一次查完，而不是让 admin-server 发三次 Feign。
+     * BFF 的聚合应该聚"跨服务才拿到的东西"（昵称、门店名），
+     * 同一个库里的三张表让远端去拼，等于把数据归属又打散了。</p>
+     */
+    OrderAdminDetailDTO adminDetail(String orderNo);
 }

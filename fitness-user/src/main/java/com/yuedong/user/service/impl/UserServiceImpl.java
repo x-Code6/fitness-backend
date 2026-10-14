@@ -271,6 +271,15 @@ public class UserServiceImpl implements UserService {
         }
     }
 
+    @Override
+    public long countEnabled() {
+        // 只数 status=1（正常）。禁用的人不计入"会员数"是运营口径：
+        // 看板上的会员数是"能下单的人数"，把封禁账号算进去会虚高
+        Long count = userMapper.selectCount(new LambdaQueryWrapper<User>()
+                .eq(User::getStatus, 1));
+        return count == null ? 0L : count;
+    }
+
     // =====================================================================
     // 私有工具
     // =====================================================================

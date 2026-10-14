@@ -1,12 +1,15 @@
 package com.yuedong.order.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.yuedong.common.exception.BusinessException;
+import com.yuedong.common.model.PageDTO;
 import com.yuedong.common.result.ErrorCode;
 import com.yuedong.course.api.client.CoachClient;
 import com.yuedong.course.api.client.StoreClient;
 import com.yuedong.course.api.dto.CoachDTO;
 import com.yuedong.course.api.dto.StoreDTO;
+import com.yuedong.order.api.dto.ReservationAdminDTO;
 import com.yuedong.order.constant.OrderConstants;
 import com.yuedong.order.constant.ReservationStatus;
 import com.yuedong.order.mapper.CoachBusyMapper;
@@ -548,6 +551,99 @@ public class ReservationServiceImpl implements ReservationService {
 
     private String weekDayText(LocalDate day) {
         return new String[]{"", "一", "二", "三", "四", "五", "六", "日"}[day.getDayOfWeek().getValue()];
+    }
+
+    // =====================================================================
+    // 管理端
+    // =====================================================================
+
+    @Override
+    public PageDTO<ReservationAdminDTO> adminPage(String status, Long coachId, Long storeId,
+                                                  String date, String keyword,
+                                                  Integer page, Integer size) {
+        // ===== 第 1 步：把"某一天"翻成 [00:00, 次日00:00) 的闭开区间 =====
+        // ★不写 DATE(start_time)=? ：对列套函数索引就废了，一天一约也得扫全表
+        LocalDateTime dayStart = null;
+        LocalDateTime dayEnd = null;
+        if (date != null && !date.isBlank()) {
+            LocalDate day = LocalDate.parse(date.trim());
+            dayStart = day.atStartOfDay();
+            dayEnd = day.plusDays(1).atStartOfDay();
+        }
+
+        boolean hasKeyword = keyword != null && !keyword.isBlank();
+        String kw = hasKeyword ? keyword.trim() : null;
+
+        Page<Reservation> result = reservationMapper.selectPage(
+                new Page<>(page == null || page < 1 ? 1 : page,
+                        size == null || size < 1 ? 10 : Math.min(size, 50)),
+                new LambdaQueryWrapper<Reservation>()
+                        .eq(status != null && !status.isBlank() && !"ALL".equals(status),
+                                Reservation::getStatus, status)
+                        .eq(coachId != null, Reservation::getCoachId, coachId)
+                        .eq(storeId != null, Reservation::getStoreId, storeId)
+                        .ge(dayStart != null, Reservation::getStartTime, dayStart)
+                        .lt(dayEnd != null, Reservation::getStartTime, dayEnd)
+                        .and(hasKeyword, item -> item.like(Reservation::getReservationNo, kw)
+                                .or().like(Reservation::getOrderNo, kw)
+                                .or().like(Reservation::getCourseName, kw)
+                                .or().like(Reservation::getCoachName, kw))
+                        .orderByDesc(Reservation::getId));
+
+        List<ReservationAdminDTO> rows = new ArrayList<>();
+        for (Reservation reservation : result.getRecords()) {
+            rows.add(toAdminDTO(reservation));
+        }
+        return PageDTO.of(rows, result.getTotal());
+    }
+
+    @Override
+    public ReservationAdminDTO adminVerify(String verifyCode) {
+        // ★复用用户侧那一份 verify：状态判断、CAS 登记、通知都在那里，不重写第二遍
+        verify(verifyCode);
+        Reservation row = reservationMapper.selectOne(new LambdaQueryWrapper<Reservation>()
+                .eq(Reservation::getVerifyCode, verifyCode));
+        return toAdminDTO(row);
+    }
+
+    @Override
+    public boolean hasFutureByCoach(Long coachId) {
+        if (coachId == null) {
+            return false;
+        }
+        // 只数"还没开始"的 BOOKED：已完成/已取消的历史单不挡删除
+        // （教练改名离职都不影响它们，名字是快照列）
+        return reservationMapper.selectCount(new LambdaQueryWrapper<Reservation>()
+                .eq(Reservation::getCoachId, coachId)
+                .eq(Reservation::getStatus, ReservationStatus.BOOKED)
+                .gt(Reservation::getStartTime, LocalDateTime.now())) > 0;
+    }
+
+    @Override
+    public ReservationAdminDTO toAdminDTO(Reservation row) {
+        return ReservationAdminDTO.builder()
+                .id(row.getId())
+                .reservationNo(row.getReservationNo())
+                .userId(row.getUserId())
+                .entitlementId(row.getEntitlementId())
+                .orderNo(row.getOrderNo())
+                .courseId(row.getCourseId())
+                .courseName(row.getCourseName())
+                .storeId(row.getStoreId())
+                .storeName(row.getStoreName())
+                .coachId(row.getCoachId())
+                .coachName(row.getCoachName())
+                .lessonHours(row.getLessonHours())
+                .startTime(row.getStartTime())
+                .endTime(row.getEndTime())
+                .status(row.getStatus())
+                .statusText(ReservationStatus.textOf(row.getStatus()))
+                .verifyCode(row.getVerifyCode())
+                .verifiedAt(row.getVerifiedAt())
+                .finishedAt(row.getFinishedAt())
+                .cancelDeadline(row.getCancelDeadline())
+                .createdAt(row.getCreatedAt())
+                .build();
     }
 
     private String dateLabel(LocalDate day) {

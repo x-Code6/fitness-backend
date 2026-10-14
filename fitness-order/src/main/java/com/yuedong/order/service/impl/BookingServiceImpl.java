@@ -15,6 +15,9 @@ import com.yuedong.course.api.dto.CouponUsableDTO;
 import com.yuedong.course.api.dto.CourseDTO;
 import com.yuedong.course.api.dto.StoreDTO;
 import com.yuedong.order.api.dto.BookingDTO;
+import com.yuedong.order.api.dto.EntitlementAdminDTO;
+import com.yuedong.order.api.dto.OrderAdminDetailDTO;
+import com.yuedong.order.api.dto.ReservationAdminDTO;
 import com.yuedong.order.constant.BookingStatus;
 import com.yuedong.order.constant.EntitlementStatus;
 import com.yuedong.order.constant.OrderConstants;
@@ -83,6 +86,13 @@ public class BookingServiceImpl implements BookingService {
     private final ObjectMapper objectMapper;
     private final EntitlementService entitlementService;
     private final com.yuedong.order.service.RatingService ratingService;
+    /**
+     * 预约服务。<b>只用于管理端详情</b>把三条轴拼在一起。
+     * <p>★不会形成循环依赖：ReservationServiceImpl 依赖的是凭证服务与 mapper，
+     * 不回头依赖订单服务。如果哪天预约里要读订单服务的逻辑，
+     * 就得把这层聚合挪到别处（比如 admin 侧或一个新的查询服务），而不是让两边互注。</p>
+     */
+    private final com.yuedong.order.service.ReservationService reservationService;
 
     // =====================================================================
     // 创建订单
@@ -617,6 +627,39 @@ public class BookingServiceImpl implements BookingService {
         // ★管理端只按单号撤这一笔（代客操作要精确，不该顺手把同组别的单也撤了）
         cancel(booking.getUserId(), orderNo, null);
         log.info("管理端代客取消订单: orderNo={}, 对象 userId={}", orderNo, booking.getUserId());
+    }
+
+    @Override
+    public OrderAdminDetailDTO adminDetail(String orderNo) {
+        // ===== 第 1 步：订单本体（按单号查，管理端不限定 user_id）=====
+        Booking booking = bookingMapper.selectOne(new LambdaQueryWrapper<Booking>()
+                .eq(Booking::getOrderNo, orderNo));
+        if (booking == null) {
+            throw new BusinessException(ErrorCode.BOOKING_NOT_FOUND);
+        }
+
+        // ===== 第 2 步：同一库里的另外两条轴，各一次等值查询 =====
+        // ★不在循环里按凭证逐条查预约：凭证有几张就查几次，是典型的 N+1。
+        //   预约表本来就存了 order_no 冗余列（就是为了这一句省一次 JOIN）
+        List<EntitlementAdminDTO> entitlements = new ArrayList<>();
+        Map<String, List<Entitlement>> byOrder =
+                entitlementService.mapByOrderNos(booking.getUserId(), List.of(orderNo));
+        for (Entitlement entitlement : byOrder.getOrDefault(orderNo, List.of())) {
+            entitlements.add(entitlementService.toAdminDTO(entitlement));
+        }
+        entitlementService.fillReservationCounts(entitlements);
+
+        List<ReservationAdminDTO> reservations = new ArrayList<>();
+        for (Reservation reservation : reservationMapper.selectList(new LambdaQueryWrapper<Reservation>()
+                .eq(Reservation::getOrderNo, orderNo).orderByDesc(Reservation::getId))) {
+            reservations.add(reservationService.toAdminDTO(reservation));
+        }
+
+        return OrderAdminDetailDTO.builder()
+                .order(toDTO(booking))
+                .entitlements(entitlements)
+                .reservations(reservations)
+                .build();
     }
 
     // =====================================================================

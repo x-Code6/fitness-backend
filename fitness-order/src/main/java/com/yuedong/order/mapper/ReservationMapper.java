@@ -2,10 +2,13 @@ package com.yuedong.order.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.yuedong.order.model.entity.Reservation;
+import com.yuedong.order.model.vo.ReservationCountRow;
 import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 /**
  * 预约单 Mapper。
@@ -58,4 +61,31 @@ public interface ReservationMapper extends BaseMapper<Reservation> {
     @Update("UPDATE t_reservation SET verified_at = #{now} " +
             "WHERE verify_code = #{verifyCode} AND status = 'BOOKED' AND verified_at IS NULL")
     int markVerified(@Param("verifyCode") String verifyCode, @Param("now") LocalDateTime now);
+
+    /**
+     * 某一天被占用的<b>格子数</b>（看板"时段占用率"的分子）。
+     *
+     * <p>★累加的是 {@code lesson_hours} 而不是行数：一节 2 小时的课占 2 个整点格子，
+     * 按行数算会把占用率低算一半，而分母（教练工时）是按小时算的，
+     * <b>分子分母必须同一单位</b>——这条和贝叶斯评分里"分子分母口径要一致"是同一类错误。</p>
+     *
+     * <p>已取消的单不算：它占的格子在取消那一刻就被释放了（删了 t_coach_busy 行），
+     * 再算进分子就等于把已经还给别人的时段又宣称占着。</p>
+     */
+    @Select("SELECT COALESCE(SUM(lesson_hours), 0) FROM t_reservation" +
+            " WHERE status <> 'CANCELED' AND start_time >= #{start} AND start_time < #{end}")
+    Integer sumSlotsBetween(@Param("start") LocalDateTime start, @Param("end") LocalDateTime end);
+
+    /**
+     * 整页凭证各被约过几次（管理端凭证列表的"已约 N 次"）。
+     * <p>★一条 GROUP BY 拿完整页；已取消的不算——用户取消后那次占用还给了凭证，
+     * 记进"已约次数"会让运营以为这张凭证比实际用得少。</p>
+     */
+    @Select("<script>" +
+            "SELECT entitlement_id, COUNT(*) AS reservation_count FROM t_reservation" +
+            " WHERE status &lt;&gt; 'CANCELED' AND entitlement_id IN " +
+            "<foreach collection='entitlementIds' item='id' open='(' separator=',' close=')'>#{id}</foreach>" +
+            " GROUP BY entitlement_id" +
+            "</script>")
+    List<ReservationCountRow> countByEntitlements(@Param("entitlementIds") List<Long> entitlementIds);
 }

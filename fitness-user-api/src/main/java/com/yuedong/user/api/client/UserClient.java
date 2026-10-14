@@ -38,4 +38,8 @@ public interface UserClient {
     /** 管理端：禁用/启用会员。与 {@code POST /inner/user/admin/status} 对应。 */
     @PostMapping("/inner/user/admin/status")
     Result<Void> memberStatus(@RequestParam("id") Long id, @RequestParam("status") Integer status);
+
+    /** 管理端看板：正常会员总数。与 {@code GET /inner/user/admin/count} 对应。 */
+    @GetMapping("/inner/user/admin/count")
+    Result<Long> memberCount();
 }

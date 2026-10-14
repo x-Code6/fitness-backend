@@ -67,4 +67,12 @@ public interface UserService {
      * @param status 1=正常 0=禁用；传 0 时实现里会同步吊销该用户的全部登录令牌
      */
     void adminSetStatus(Long id, Integer status);
+
+    /**
+     * 管理端看板：正常状态（status=1）的会员总数。
+     * <p>★单独给一个 count 而不是让调用方用 {@code adminPage(size=1)} 读 total：
+     * 那种写法要付一次 ORDER BY id DESC 的排序成本还要依赖分页信封的结构，
+     * 语义上也不是"我要一页"。少一个数就加一个只读方法，比 misuse 现成接口便宜。</p>
+     */
+    long countEnabled();
 }

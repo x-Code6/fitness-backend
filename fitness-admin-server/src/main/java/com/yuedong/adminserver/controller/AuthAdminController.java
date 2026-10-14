@@ -39,13 +39,20 @@ public class AuthAdminController {
     /**
      * 角色 → 可见菜单。
      *
-     * <p>★v2 去掉了 "verify"（核销工作台）：核销的对象是预约单，预约模型还没落地，
-     * 留着一个点开就报错的入口比没有更糟。随预约分支一起回来。</p>
+     * <p>★切片 L 把 "coaches" 和 "reservations" 两个 key 加回来了：
+     * 上一轮因为预约模型没落地，核销工作台被摘掉（留一个点开就报错的入口比没有更糟），
+     * 现在教练与时段两条接口都已就位。</p>
+     *
+     * <p>★给 OPERATOR 开放教练与预约、但不开放门店/会员/日志：
+     * 前者是日常运营要动的内容资源，后者涉及个人信息与审计痕迹，只给超管。
+     * 权限点的粒度是<b>菜单</b>而不是按钮，一期不做按钮级（那就需要一套操作字典表，
+     * 而这里没有一个场景真的需要"能看不能改"）。</p>
      */
     private static final Map<String, List<String>> ROLE_MENUS = Map.of(
-            "SUPER", List.of("dashboard", "courses", "seckill", "orders",
-                    "coupons", "gifts", "members", "stores", "logs"),
-            "OPERATOR", List.of("dashboard", "courses", "seckill", "orders", "coupons", "gifts"));
+            "SUPER", List.of("dashboard", "courses", "coaches", "stores", "seckill",
+                    "coupons", "orders", "reservations", "members", "gifts", "logs"),
+            "OPERATOR", List.of("dashboard", "courses", "coaches", "seckill",
+                    "coupons", "orders", "reservations", "gifts"));
 
     private final AdminMapper adminMapper;
     private final PasswordEncoder passwordEncoder;

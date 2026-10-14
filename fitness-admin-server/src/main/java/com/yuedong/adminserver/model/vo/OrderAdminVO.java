@@ -24,8 +24,13 @@ public class OrderAdminVO {
     /** 对外订单号 */
     private String orderNo;
 
-    /** 会员昵称（user 服务聚合；补齐失败时为 null，前端显示"—"） */
-    private String userName;
+    /**
+     * 会员昵称（user 服务聚合；补齐失败时为 null，前端显示"—"）。
+     * <p>★字段名叫 {@code nickname} 而不是 {@code userName}：
+     * 管理端页面已按 Mock 的 nickname 写完，而"用户名"在这个系统里根本不存在
+     * （登录用手机号，展示用昵称）。BFF 是贴合展示层的一层，这类命名以它为准。</p>
+     */
+    private String nickname;
 
     private Long userId;
 

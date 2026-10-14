@@ -1,4 +1,4 @@
-package com.yuedong.course.model.dto;
+package com.yuedong.course.api.dto;
 
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
@@ -11,6 +11,11 @@ import java.util.List;
 
 /**
  * 管理端保存教练的入参（新增与修改共用一个 DTO：{@code id} 为空即新增）。
+ *
+ * <p>★这个类从 {@code fitness-course} 的内部包搬到 api 模块，唯一原因是
+ * {@code fitness-admin-server} 要通过 Feign 调 {@code /inner/coach/save}：
+ * 契约类型放在服务内部，调用方就只能自己抄一份，抄的那一份从此不会再被编译检查。
+ * 和 CourseSaveDTO / StoreSaveDTO 同处一地，正是"接口签名两边同时改，改错编译期就报"的前提。</p>
  *
  * <p>校验注解的作用边界要说清楚：这些 {@code @NotBlank/@Min} 只拦"格式错的请求"，
  * 拦不住业务不合法（比如 storeId 指向一个已关闭的门店、courseIds 里有不存在的课程），

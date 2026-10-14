@@ -2,10 +2,13 @@ package com.yuedong.course.controller.inner;
 
 import com.yuedong.common.model.PageDTO;
 import com.yuedong.common.result.Result;
+import com.yuedong.course.api.dto.AdminCountDTO;
 import com.yuedong.course.api.dto.CourseAdminDTO;
 import com.yuedong.course.api.dto.CourseDTO;
 import com.yuedong.course.api.dto.CourseSaveDTO;
 import com.yuedong.course.api.dto.CourseStoreKeyDTO;
+import com.yuedong.course.api.dto.CourseWindowAdminDTO;
+import com.yuedong.course.api.dto.CourseWindowSaveDTO;
 import com.yuedong.course.api.dto.SeckillActiveDTO;
 import com.yuedong.course.service.CourseService;
 import com.yuedong.course.service.SeckillActivityService;
@@ -87,13 +90,15 @@ public class InnerCourseController {
     // 管理端（fitness-admin-server 经 Feign 调用）
     // =====================================================================
 
-    /** 管理端：课程分页 */
+    /** 管理端：课程分页（类型/课种/上下架/关键词四个筛选位，不传即不过滤） */
     @GetMapping("/admin/page")
     public Result<PageDTO<CourseAdminDTO>> adminPage(@RequestParam(required = false) String type,
+                                                     @RequestParam(required = false) String kind,
+                                                     @RequestParam(required = false) Integer status,
                                                      @RequestParam(required = false) String keyword,
                                                      @RequestParam(defaultValue = "1") Integer page,
                                                      @RequestParam(defaultValue = "10") Integer size) {
-        return Result.ok(courseService.adminPage(type, keyword, page, size));
+        return Result.ok(courseService.adminPage(type, kind, status, keyword, page, size));
     }
 
     /** 管理端：创建/编辑课程 */
@@ -132,5 +137,28 @@ public class InnerCourseController {
         }
         courseService.adminAssignStores(courseId, storeIds);
         return Result.ok();
+    }
+
+    /** 管理端：课程 × 门店两层时间窗分页 */
+    @GetMapping("/admin/window/page")
+    public Result<PageDTO<CourseWindowAdminDTO>> adminWindowPage(
+            @RequestParam(required = false) Long courseId,
+            @RequestParam(required = false) Long storeId,
+            @RequestParam(defaultValue = "1") Integer page,
+            @RequestParam(defaultValue = "10") Integer size) {
+        return Result.ok(courseService.adminWindowPage(courseId, storeId, page, size));
+    }
+
+    /** 管理端：保存某门课在某家店的售卖窗口与凭证有效期 */
+    @PostMapping("/admin/window/save")
+    public Result<Void> adminWindowSave(@Valid @RequestBody CourseWindowSaveDTO dto) {
+        courseService.adminWindowSave(dto);
+        return Result.ok();
+    }
+
+    /** 管理端看板：课程侧计数（在售课/可约教练/营业门店/今日应开放格子） */
+    @GetMapping("/admin/count")
+    public Result<AdminCountDTO> adminCount() {
+        return Result.ok(courseService.adminCount());
     }
 }

@@ -6,6 +6,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
+import java.util.List;
 
 /**
  * 课程管理端行 DTO：列表展示 + 编辑表单回填。
@@ -63,4 +64,17 @@ public class CourseAdminDTO {
 
     /** 已配置的可售门店数。★列表页用它一眼看出"这门课配了却没上架到任何门店"这种配置事故 */
     private Integer storeCount;
+
+    /**
+     * 会教这门课的教练数。
+     * <p>★v2 新增：一门课"在卖但没有教练会教"= 买完约不上课，
+     * 所以这个 0 必须出现在列表上，而不是等用户投诉才发现。</p>
+     */
+    private Integer coachCount;
+
+    /** 已配教练 id（编辑表单回填多选框）。★放在分页里省掉"点开表单再查一次"的一次转圈 */
+    private List<Long> coachIds;
+
+    /** 这门课在各门店的两层时间窗原始行（表单回填 + "哪家店在卖、什么时候能买"一眼看清） */
+    private List<CourseWindowAdminDTO> storeWindows;
 }
