@@ -81,17 +81,29 @@ public class Entitlement {
     private LocalDateTime createdAt;
 
     /**
-     * 还剩几次。<b>不映射数据库列</b>（列只有 totalTimes/usedTimes），
-     * 由服务层算好塞进 VO，避免"剩余次数"这种派生值在库里和代码里各存一份、对不上。
+     * 这张凭证能不能覆盖<b>给定的那一刻</b>（通常是"上课时刻"或"现在"）。
+     *
+     * <p>★三个条件缺一不可，而且两处都是 NULL 语义判断，这就是把规则收进一个方法的原因：
+     * <ol>
+     *   <li>状态 ACTIVE（用完/过期的都不行）；</li>
+     *   <li>还有次数：{@code totalTimes == null}（不限次）或 {@code used < total}。
+     *       <b>漏掉 null 分支会把 UNLIMITED 课判成 0 次卡，用户永远约不了</b>；</li>
+     *   <li>未到有效期：{@code validUntil == null}（永久）或晚于给定时刻。
+     *       <b>漏掉 null 分支会把常年课判成已过期</b>。</li>
+     * </ol>
+     *
+     * <p>参数用"哪一刻"而不是固定 now，是因为两条链路问的是不同的时刻：
+     * 列表页问"现在还能不能用"，创建预约问"<b>上课时</b>还有效吗"
+     * （有效期最后一天约晚上的课，用 now 判会误放行）。
+     * 规则在两个地方各自实现迟早会漂移，所以只留这一份。</p>
      */
-    @TableField(exist = false)
-    private Integer remainTimes;
-
-    /**
-     * 这张凭证现在能不能拿去预约。★同样不是数据库列，是给前端 actions 用的判定结果。
-     * <p>三个条件缺一不可：状态 ACTIVE、有剩余次数（或不限次）、未到有效期
-     * （或永久）。任一漏掉都会做出"按钮能点、提交必失败"的页面。</p>
-     */
-    @TableField(exist = false)
-    private Boolean bookable;
+    public boolean usableAt(java.time.LocalDateTime moment) {
+        if (!com.yuedong.order.constant.EntitlementStatus.ACTIVE.equals(this.status)) {
+            return false;
+        }
+        int usedNow = this.usedTimes == null ? 0 : this.usedTimes;
+        boolean hasTimes = this.totalTimes == null || usedNow < this.totalTimes;
+        boolean inValid = this.validUntil == null || this.validUntil.isAfter(moment);
+        return hasTimes && inValid;
+    }
 }

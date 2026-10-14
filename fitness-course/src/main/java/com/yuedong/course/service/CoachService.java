@@ -26,6 +26,17 @@ public interface CoachService {
     List<CoachVO> listByCourseAndStore(Long courseId, Long storeId);
 
     /**
+     * 内部接口用：同上，但返回<b>实体</b>而不是展示 VO。
+     *
+     * <p>★为什么不复用 {@link #listByCourseAndStore}：C 端 VO 刻意不带
+     * {@code workDays}（星期已参与后端计算，前端不该再算一遍），
+     * 而 order 服务算可约时段必须按星期判断教练当天上不上班。
+     * <b>展示对象一旦当跨服务契约用，就会为了加字段把展示层搞脏</b>
+     * ——这和 {@link #listByStore} 返回实体的理由是同一条。</p>
+     */
+    List<Coach> listBookable(Long courseId, Long storeId);
+
+    /**
      * 新增或修改教练。
      *
      * @param dto 入参，{@code id} 为空即新增

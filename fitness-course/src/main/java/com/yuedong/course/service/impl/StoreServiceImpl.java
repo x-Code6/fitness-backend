@@ -190,6 +190,17 @@ public class StoreServiceImpl implements StoreService, ApplicationRunner {
         return rows;
     }
 
+    /**
+     * 单店详情（内部接口用）。
+     * <p>查 {@code t_store} 主键一条；门店不存在返回 null，由调用方决定怎么兜——
+     * 这里不抛异常，因为"店被删了"对订单/预约来说不是错误，是历史。</p>
+     */
+    @Override
+    public StoreDTO detail(Long storeId) {
+        Store store = storeMapper.selectById(storeId);
+        return store == null ? null : toDTO(store);
+    }
+
     @Override
     public void adminSave(StoreSaveDTO dto) {
         Store store;

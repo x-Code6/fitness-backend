@@ -1,6 +1,7 @@
 package com.yuedong.course.controller.inner;
 
 import com.yuedong.common.result.Result;
+import com.yuedong.course.api.dto.CoachDTO;
 import com.yuedong.course.model.dto.CoachSaveDTO;
 import com.yuedong.course.model.entity.Coach;
 import com.yuedong.course.service.CoachService;
@@ -36,6 +37,28 @@ public class InnerCoachController {
     @GetMapping("/list")
     public Result<List<Coach>> listByStore(@RequestParam Long storeId) {
         return Result.ok(coachService.listByStore(storeId));
+    }
+
+    /**
+     * 内部：这门课在这家店的可约教练（order 服务算时段用）。
+     * <p>只回可预约需要的字段：工时区间 + 可约星期，<b>不回 phone</b>。</p>
+     */
+    @GetMapping("/bookable")
+    public Result<List<CoachDTO>> bookable(@RequestParam Long courseId, @RequestParam Long storeId) {
+        List<CoachDTO> rows = new java.util.ArrayList<>();
+        for (Coach coach : coachService.listBookable(courseId, storeId)) {
+            rows.add(CoachDTO.builder()
+                    .coachId(coach.getId())
+                    .name(coach.getName())
+                    .title(coach.getTitle())
+                    .avatarColor(coach.getAvatarColor())
+                    .storeId(coach.getStoreId())
+                    .workStartHour(coach.getWorkStartHour())
+                    .workEndHour(coach.getWorkEndHour())
+                    .workDays(coach.getWorkDays())
+                    .build());
+        }
+        return Result.ok(rows);
     }
 
     /** 管理端：新增或修改教练，返回教练 id（新增后前端要用它去配课） */
