@@ -1,51 +1,66 @@
 package com.yuedong.course.api.dto;
 
+import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
 
 /**
- * 管理端课程分页行 DTO（列表展示 + 编辑弹窗回填所需字段）。
+ * 课程管理端行 DTO：列表展示 + 编辑表单回填。
+ *
+ * <p>★与 {@link CourseDTO}（给 order 建单用）分开的理由：
+ * 两个消费方要的东西不同——管理端要能改的全部字段（含 tags 原始逗号串、上下架状态），
+ * 建单只要价格与名称等快照字段。合成一个 DTO 的结果是"哪儿都能用"，
+ * 于是谁也不敢改字段，最后变成一个谁也不了解的巨型对象。</p>
+ *
+ * <p>{@code tags} 在这里<b>保持逗号分隔的原样字符串</b>：管理端表单就是一个文本框，
+ * 拆开再拼回去反而容易把用户输入的空格丢掉。C 端才拆成数组（见 {@code CourseVO.tags}）。</p>
  */
 @Data
 @Builder
+@NoArgsConstructor
+@AllArgsConstructor
 public class CourseAdminDTO {
 
     private Long id;
 
     private String name;
 
-    /** 课程类型：团课/私教/瑜伽/骑行/操课 */
+    /** SALE / CONTENT */
+    private String courseKind;
+
     private String type;
 
-    private String coach;
+    /** 一节课几小时（1/2/3），管理端下拉 */
+    private Integer lessonHours;
 
-    private String coachTitle;
-
-    /** 时长（分钟） */
     private Integer duration;
 
-    /** 消耗（千卡） */
     private Integer calories;
-
-    private Integer capacity;
-
-    private Integer booked;
 
     private BigDecimal price;
 
-    /** 标签，逗号分隔 */
+    /** TIMES / UNLIMITED；CONTENT 为 null */
+    private String saleType;
+
+    private Integer timesPerBuy;
+
+    /** 标签，逗号分隔原始串 */
     private String tags;
 
-    private String storeName;
+    private String coverImage;
 
-    private String nextTime;
+    private String coverColor;
 
     private String description;
 
     private String suitable;
 
-    /** 1=上架 0=下架 */
+    /** 1 上架 / 0 下架 */
     private Integer status;
+
+    /** 已配置的可售门店数。★列表页用它一眼看出"这门课配了却没上架到任何门店"这种配置事故 */
+    private Integer storeCount;
 }

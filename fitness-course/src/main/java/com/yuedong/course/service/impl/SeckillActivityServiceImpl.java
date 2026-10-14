@@ -10,6 +10,7 @@ import com.yuedong.course.mapper.SeckillActivityMapper;
 import com.yuedong.course.model.entity.Course;
 import com.yuedong.course.model.entity.SeckillActivity;
 import com.yuedong.course.model.vo.CourseVO;
+import com.yuedong.course.service.CourseService;
 import com.yuedong.course.service.SeckillActivityService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -20,6 +21,8 @@ import org.springframework.stereotype.Service;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
@@ -41,44 +44,77 @@ public class SeckillActivityServiceImpl implements SeckillActivityService {
     private final SeckillActivityMapper activityMapper;
     private final CourseMapper courseMapper;
     private final StringRedisTemplate redis;
+    /**
+     * 课程 VO 的组装统一由 {@link CourseService} 负责。
+     * <p>以前这里手抄了一遍 {@code CourseVO.builder()...}，于是课程 VO 一改字段
+     * 就得在两处同步——秒杀页和课程列表显示不一致就是这么来的。
+     * 注入接口而不是注入实现：{@code CourseServiceImpl} 依赖的是本类的 Mapper，
+     * 不依赖本服务，所以不构成循环。</p>
+     */
+    private final CourseService courseService;
 
 
-    /** 进行中的秒杀课程列表（前端秒杀页/首页横幅） */
+    /** 进行中的秒杀课程列表（前端秒杀页 / 首页横幅） */
     @Override
     public List<CourseVO> listActive() {
-        Map<Long, SeckillActivity> activityMap = activityMapper.selectList(
-                        new LambdaQueryWrapper<SeckillActivity>().eq(SeckillActivity::getStatus, 1))
-                .stream()
-                .collect(Collectors.toMap(SeckillActivity::getCourseId, Function.identity()));
-        List<Long> courseIds = List.copyOf(activityMap.keySet());
-        if (courseIds.isEmpty()) {
+        List<SeckillActivity> activities = activityMapper.selectList(
+                new LambdaQueryWrapper<SeckillActivity>().eq(SeckillActivity::getStatus, 1));
+        if (activities.isEmpty()) {
             return List.of();
         }
-        return courseMapper.selectBatchIds(courseIds).stream()
-                .map(c -> {
-                    SeckillActivity a = activityMap.get(c.getId());
-                    CourseVO vo = CourseVO.builder()
-                            .id(c.getId()).name(c.getName()).type(c.getType())
-                            .coach(c.getCoach()).coachTitle(c.getCoachTitle())
-                            .duration(c.getDuration()).calories(c.getCalories())
-                            .capacity(c.getCapacity()).booked(c.getBooked())
-                            .price(c.getPrice())
-                            .tags(c.getTags() == null ? List.of() : List.of(c.getTags().split(",")))
-                            .storeName(c.getStoreName()).nextTime(c.getNextTime())
-                            .build();
-                    // 秒杀页库存展示以 Redis 实时值为准（DB.remain 可能滞后）
-                    String stock = redis.opsForValue().get(RedisKeyConstants.seckillStock(a.getId()));
-                    int remain = stock != null ? Integer.parseInt(stock) : a.getRemain();
-                    vo.setSeckill(CourseVO.SeckillInfo.builder()
-                            .activityId(a.getId())
-                            .price(a.getSeckillPrice())
-                            .total(a.getTotal())
-                            .remain(remain)
-                            .endTime(a.getEndTime().atZone(ZoneId.systemDefault()).toInstant().toEpochMilli())
-                            .build());
-                    return vo;
-                })
-                .toList();
+
+        // 活动按 courseId 归组。★不用 Collectors.toMap：同一门课配了两个"进行中"活动时
+        // 它会抛 IllegalStateException("Duplicate key")，把整个秒杀页打成 500。
+        // 这里保留 id 较大的那个（较新的一次活动）
+        Map<Long, SeckillActivity> activityMap = new HashMap<>();
+        for (SeckillActivity activity : activities) {
+            SeckillActivity existed = activityMap.get(activity.getCourseId());
+            if (existed == null || activity.getId() > existed.getId()) {
+                activityMap.put(activity.getCourseId(), activity);
+            }
+        }
+
+        // 一次批量查课程，绝不在循环里 selectById
+        List<CourseVO> result = new ArrayList<>();
+        for (Course course : courseMapper.selectBatchIds(activityMap.keySet())) {
+            SeckillActivity activity = activityMap.get(course.getId());
+            CourseVO vo = courseService.buildCourseVO(course, activity);
+
+            // 库存展示以 Redis 实时值为准（DB.remain 是账本，消费者还没追上时它会偏大）
+            Integer liveRemain = readLiveStock(activity.getId());
+            vo.setSeckill(CourseVO.SeckillInfo.builder()
+                    .activityId(activity.getId())
+                    .price(activity.getSeckillPrice())
+                    .priceText(String.format("¥%.2f", activity.getSeckillPrice()))
+                    .total(activity.getTotal())
+                    .remain(liveRemain == null ? activity.getRemain() : liveRemain)
+                    .endTime(activity.getEndTime().atZone(ZoneId.systemDefault()).toInstant().toEpochMilli())
+                    .build());
+            result.add(vo);
+        }
+        return result;
+    }
+
+    /**
+     * 读 Redis 里的实时剩余份数。
+     *
+     * <p>★旧实现是 {@code Integer.parseInt(stock)}，两种情况会炸：
+     * key 不存在（活动刚下架或 Redis 被清）返回 null → NPE；
+     * 值被写坏成非数字 → NumberFormatException。
+     * 这里两种都退回 null，由调用方用 DB 的 remain 兜底——
+     * <b>缓存只该用于"更准"，不该因为缓存异常让整个接口 500</b>。</p>
+     */
+    private Integer readLiveStock(Long activityId) {
+        String stock = redis.opsForValue().get(RedisKeyConstants.seckillStock(activityId));
+        if (stock == null || stock.isBlank()) {
+            return null;
+        }
+        try {
+            return Integer.valueOf(stock.trim());
+        } catch (NumberFormatException e) {
+            log.warn("秒杀库存缓存内容异常，回退 DB 剩余值: activityId={}, value={}", activityId, stock);
+            return null;
+        }
     }
 
     @Override

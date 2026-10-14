@@ -31,7 +31,7 @@ services:
     networks: [fitness-net]
 
   redis:
-    image: redis:7
+    image: redis:7.4
     container_name: fitness-redis
     command: ["redis-server", "--appendonly", "yes"]
     ports:
@@ -48,7 +48,7 @@ services:
   rabbitmq:
     # mini-program 自建镜像：已内置 rabbitmq_delayed_message_exchange 插件
     # （在 F:/生活工具小程序/rabbitmq 下 docker build -t lifetools-rabbitmq:3.13-delayed .）
-    image: lifetools-rabbitmq:3.13-delayed
+    image: rabbitmq:3.13-management
     container_name: fitness-rabbitmq
     ports:
       - "5672:5672"
@@ -61,7 +61,7 @@ services:
     networks: [fitness-net]
 
   nacos:
-    image: nacos/nacos-server:v2.4.3-slim
+    image: nacos-server:v2.5.4
     container_name: fitness-nacos
     environment:
       MODE: standalone            # 单机模式（演示够用；生产用集群+MySQL 存储）
@@ -80,7 +80,7 @@ services:
     networks: [fitness-net]
 
   kafka:
-    image: apache/kafka:3.9.0
+    image: kafka:3.9.2
     container_name: fitness-kafka
     ports:
       - "9092:9092"
