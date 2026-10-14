@@ -23,6 +23,12 @@
 *.sh      text eol=lf
 Dockerfile text eol=lf
 docker-compose*.yml text eol=lf
+# compose 读的 .env / .env.example：值后面混进一个 \r 是静默故障 ——
+# VM_IP=192.168.1.5\r 会原样拼进 Kafka 的广播地址，客户端连不上还看不出原因。
+.env      text eol=lf
+.env.*    text eol=lf
+# nginx 等配置文件要挂进容器，行尾的 \r 会让解析结果不可预期
+*.conf    text eol=lf
 
 # ---------- Windows 专用：必须是 CRLF ----------
 *.bat   text eol=crlf
