@@ -92,6 +92,8 @@ public class CourseServiceImpl implements CourseService {
     private final CoachMapper coachMapper;
     private final StoreMapper storeMapper;
     private final SeckillActivityMapper seckillActivityMapper;
+    /** 规则文案工厂（D21 策略模式）。文案只在这一处产出，列表/详情/时段页都从这里取 */
+    private final com.yuedong.course.rule.RuleDescribeFactory ruleDescribeFactory;
     private final StringRedisTemplate redis;
     private final RedissonClient redisson;
     private final ObjectMapper objectMapper;
@@ -288,7 +290,30 @@ public class CourseServiceImpl implements CourseService {
             return vo;
         }
         // 三表同库 JOIN 数教练：命中 t_coach_course.idx_course 与 t_coach.uk_store_name 前缀
-        vo.setCoachCount(coachMapper.countByCourseAndStore(vo.getId(), storeId));
+        int coachCount = coachMapper.countByCourseAndStore(vo.getId(), storeId);
+        vo.setCoachCount(coachCount);
+        // 带了门店上下文，这句话就换成该店的教练数（列表那句"N 家门店可约"在这里更具体）
+        vo.setLatestFreeText(coachCount > 0 ? "今天 " + coachCount + " 位教练可约" : "暂无可约时段");
+
+        // ===== 规则文案按这家店重算一遍 =====
+        // ★有效期那一行只有知道是哪家店才说得出来（同一门课在 A 店 30 天、在 B 店长期），
+        // 所以缓存里的通用版本在这里要被带上下文的版本覆盖
+        CourseStore relation = courseStoreMapper.selectOne(new LambdaQueryWrapper<CourseStore>()
+                .eq(CourseStore::getCourseId, vo.getId())
+                .eq(CourseStore::getStoreId, storeId)
+                .eq(CourseStore::getStatus, 1));
+        com.yuedong.course.rule.RuleContext context = com.yuedong.course.rule.RuleContext.builder()
+                .courseKind(vo.getKind())
+                .saleType(vo.getSaleType())
+                .lessonHours(vo.getLessonHours())
+                .timesPerBuy(vo.getTimesPerBuy())
+                .validType(relation == null ? null : relation.getValidType())
+                .validDays(relation == null ? null : relation.getValidDays())
+                .useEndTime(relation == null ? null : relation.getUseEndTime())
+                .build();
+        String scene = ruleDescribeFactory.courseSceneOf(vo.getKind(), vo.getSaleType());
+        vo.setRuleTexts(ruleDescribeFactory.describe(scene, context));
+        vo.setRuleSummary(ruleDescribeFactory.summary(scene, context));
         return vo;
     }
 
@@ -346,6 +371,14 @@ public class CourseServiceImpl implements CourseService {
                 .validDays(relation == null ? null : relation.getValidDays())
                 .useStartTime(relation == null ? null : relation.getUseStartTime())
                 .useEndTime(relation == null ? null : relation.getUseEndTime())
+                // ★规则文案随快照带出：时段页要显示同一套话，
+                // 让 order 再写一遍就会出现两处文案不一致（改一处忘另一处）
+                .ruleTexts(ruleDescribeFactory.describe(
+                        ruleDescribeFactory.courseSceneOf(course.getCourseKind(), course.getSaleType()),
+                        buildRuleContext(course, relation)))
+                .ruleSummary(ruleDescribeFactory.summary(
+                        ruleDescribeFactory.courseSceneOf(course.getCourseKind(), course.getSaleType()),
+                        buildRuleContext(course, relation)))
                 .build();
     }
 
@@ -645,10 +678,20 @@ public class CourseServiceImpl implements CourseService {
                 .storeCount(storeCount)
                 .description(course.getDescription())
                 .suitable(course.getSuitable())
-                .ruleSummary(buildRuleSummary(course, storeCount));
-
-        // ★ruleTexts 这里留 null：整块规则条目由"规则说明策略"生成（docs 4.3.5）。
-        // 在本类里手写一遍，将来策略实现后就有两处文案，必然漂移
+                .saleTypeText(saleTypeText(course))
+                // ★列表页的 latestFreeText 用"几家家门店可约"而不是教练数：
+                // 同一门课在两家店的教练是两拨人，不带 storeId 时给一个混合总数会误导。
+                // 详情页带 storeId 时由 withStoreContext 换成该店的教练数
+                .latestFreeText(storeCount > 0 ? storeCount + " 家门店可约" : "暂无可约门店")
+                .actions(buildActions(course.getCourseKind(), activity))
+                // 规则条目与摘要都由策略产出。没有门店上下文时有效期那一句会被策略自己省略，
+                // 而不是编一个"长期有效"骗用户
+                .ruleTexts(ruleDescribeFactory.describe(
+                ruleDescribeFactory.courseSceneOf(course.getCourseKind(), course.getSaleType()),
+                        buildRuleContext(course, null)))
+                .ruleSummary(ruleDescribeFactory.summary(
+                        ruleDescribeFactory.courseSceneOf(course.getCourseKind(), course.getSaleType()),
+                        buildRuleContext(course, null)));
 
         if (activity != null && activity.getEndTime() != null) {
             builder.seckill(CourseVO.SeckillInfo.builder()
@@ -664,22 +707,51 @@ public class CourseServiceImpl implements CourseService {
     }
 
     /**
-     * 列表用的一句话规则摘要：只讲用户最关心的三件事（多久一节 / 一单几次 / 几家店能约）。
-     * 完整条目在详情页由策略生成，这里不重复，避免两处文案不一致。
+     * 售卖形态文案。CONTENT 课没有售卖形态，给 null 而不是"未知"——
+     * 前端对 CONTENT 卡片根本不渲染这一行。
      */
-    private String buildRuleSummary(Course course, int storeCount) {
+    private String saleTypeText(Course course) {
         if ("CONTENT".equals(course.getCourseKind())) {
-            return "免费跟练 · 无需购买";
+            return null;
         }
-        StringBuilder text = new StringBuilder();
-        text.append(course.getLessonHours()).append(" 小时/节");
-        if ("UNLIMITED".equals(course.getSaleType())) {
-            text.append(" · 有效期内不限次");
-        } else if (course.getTimesPerBuy() != null && course.getTimesPerBuy() > 1) {
-            text.append(" · 一次购买 ").append(course.getTimesPerBuy()).append(" 次");
+        return "UNLIMITED".equals(course.getSaleType()) ? "不限次" : "按次购买";
+    }
+
+    /**
+     * 卡片按钮。★由后端算：秒杀是"这一刻有没有活动"决定的，
+     * 前端自己判会在活动刚结束的那几十秒里给出一个买不了的按钮。
+     */
+    private List<String> buildActions(String courseKind, SeckillActivity activity) {
+        List<String> actions = new ArrayList<>();
+        if ("CONTENT".equals(courseKind)) {
+            actions.add("FREE");
+            return actions;
         }
-        text.append(" · ").append(storeCount).append(" 家门店可约");
-        return text.toString();
+        actions.add("BUY");
+        if (activity != null) {
+            actions.add("SECKILL");
+        }
+        return actions;
+    }
+
+    /**
+     * 组装规则文案的输入。
+     * <p>★注意这里<b>没有</b>把 CourseStore 塞进策略去查——关系行由调用方查好传进来，
+     * 策略只吃现成字段。这是"策略不查库"那条线的具体执行方式：
+     * 查数据的代码集中在这里，Service 本来就干这个。</p>
+     *
+     * @param relation 课程在该门店的关系行，列表页没有门店上下文时传 null
+     */
+    private com.yuedong.course.rule.RuleContext buildRuleContext(Course course, CourseStore relation) {
+        return com.yuedong.course.rule.RuleContext.builder()
+                .courseKind(course.getCourseKind())
+                .saleType(course.getSaleType())
+                .lessonHours(course.getLessonHours())
+                .timesPerBuy(course.getTimesPerBuy())
+                .validType(relation == null ? null : relation.getValidType())
+                .validDays(relation == null ? null : relation.getValidDays())
+                .useEndTime(relation == null ? null : relation.getUseEndTime())
+                .build();
     }
 
     /** lessonHours 兜底：不在 1~3 内一律按 1。★表单是下拉框，正常不会走到这里 */

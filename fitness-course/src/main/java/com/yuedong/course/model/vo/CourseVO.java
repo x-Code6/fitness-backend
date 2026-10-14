@@ -47,6 +47,12 @@ public class CourseVO {
     /** TIMES 按次 / UNLIMITED 不限次；CONTENT 为 null */
     private String saleType;
 
+    /**
+     * 售卖形态文案："按次购买" / "不限次"。
+     * <p>★和 statusText 同一个道理：文案是业务规则，前端各维护一份一定飘。</p>
+     */
+    private String saleTypeText;
+
     /** 买一单给几次（仅 TIMES） */
     private Integer timesPerBuy;
 
@@ -78,6 +84,31 @@ public class CourseVO {
 
     /** 该门店下可约教练数（仅详情页带 storeId 请求时填） */
     private Integer coachCount;
+
+    /**
+     * 列表页那句最有吸引力的话："3 位教练可约" / "暂无可约时段"。
+     * <p>★列表（不带 storeId）时给"N 家门店可约"，因为此时教练数没有确定口径
+     * ——同一门课在两家店的教练是两拨人，给一个混合总数会误导。
+     * 详情页带了 storeId 才会换成该店的教练数。</p>
+     */
+    private String latestFreeText;
+
+    /**
+     * 评分摘要，形如 "4.8"。★数据在 yd_order 的评价统计表里，
+     * 由评分切片接入批量取分后填；未接入前为 null，前端按"暂无评价"渲染
+     * ——<b>null（还没算）和 0 分（有人打了几分）是两件事，不要用 0 表示未知</b>。
+     */
+    private String ratingText;
+
+    /** 评价条数，与 ratingText 同批接入 */
+    private Integer ratingCount;
+
+    /**
+     * 可执行动作：{@code [BUY]} / {@code [BUY, SECKILL]} / {@code [FREE]}。
+     * <p>★后端算：卡片按钮由"课程类型 + 有没有进行中的秒杀"决定，
+     * 前端自己拼就会在秒杀刚结束的那几十秒里给出过期按钮。</p>
+     */
+    private List<String> actions;
 
     /** 详情长文（仅详情页填） */
     private String description;
