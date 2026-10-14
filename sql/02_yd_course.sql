@@ -222,19 +222,27 @@ CREATE TABLE IF NOT EXISTS t_video_progress (
 CREATE TABLE IF NOT EXISTS t_course_comment (
     id            BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
     course_id     BIGINT       NOT NULL COMMENT '评论哪门展示课程（同库可 JOIN t_course）',
+    -- ★root_id 是"只有两级"能便宜下来的关键：一级的 root_id=0、二级的 root_id=所属一级 id。
+    --   没有它，"取某个一级下面的全部回复"要么按 parent_id 一层层捞、要么递归查询；
+    --   有了它就是一条 root_id=? 的平铺查询（与社区评论 t_post_comment 用同一套形状，
+    --   两处不是一个表，但读代码的人只需要懂一次两级方案）
+    root_id       BIGINT       NOT NULL DEFAULT 0 COMMENT '所属一级评论 id；自己就是一级时为 0',
     user_id       BIGINT       NOT NULL COMMENT '评论人（跨库 → yd_user）',
     user_name     VARCHAR(20)  NOT NULL COMMENT '昵称快照（跨库 + 高频读 + 要历史原值 → 冗余）',
     avatar_color  VARCHAR(2)   NOT NULL DEFAULT '0' COMMENT '头像配色快照',
     content       VARCHAR(300) NOT NULL COMMENT '评论内容',
-    parent_id     BIGINT       NULL     COMMENT '回复某条评论时非空；★两级结构不做无限树（无限树要递归查询、手机上缩进不可用）',
+    parent_id     BIGINT       NULL     COMMENT '直接回复的那条评论 id（一级为 NULL）。★只用于渲染"回复 @张三"，不参与分组',
     reply_to_user VARCHAR(20)  NULL     COMMENT '被回复人昵称，仅用于渲染"回复 @张三：说得对"这一行',
     status        TINYINT      NOT NULL DEFAULT 1 COMMENT '1 正常 / 0 已删除（逻辑删除，本人可删）',
     created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
-    -- 覆盖"取某课的一级评论按时间倒序分页"：等值(course_id,status)在前、排序(created_at)在后
-    KEY idx_course_time (course_id, status, created_at),
-    KEY idx_parent (parent_id)
-) ENGINE = InnoDB COMMENT '展示课程评论/回复（两级）';
+    -- 取某课的一级评论：等值(course_id, root_id=0) + id 游标（★id 自增就是时间序，不必带 created_at）
+    KEY idx_course_root (course_id, root_id, id),
+    -- 某个一级下的回复列表
+    KEY idx_root (root_id, id)
+    -- ★parent_id 上<b>不建索引</b>：分组只看 root_id，parent_id 从不作为查询条件出现。
+    --   给一个"逻辑上相关但没人按它查"的列建索引，等于白付写入成本
+) ENGINE = InnoDB COMMENT '展示课程评论/回复（两级，靠 root_id 平铺）';
 
 -- ----------------------------------------------------------------
 -- 优惠券表（模板/活动）
@@ -387,12 +395,13 @@ INSERT INTO t_video (id, course_id, coach_id, title, intro, level, duration, cal
 (6, NULL, 8, '25 分钟下肢翘臀塑造',   '跟练专区第二条。',             '进阶', 25, 240, 4400,  'https://www.w3schools.com/html/mov_bbb.mp4', 0, 1);
 
 -- 展示课评论（含一条回复，验证两级结构渲染）
-INSERT INTO t_course_comment (id, course_id, user_id, user_name, avatar_color, content, parent_id, reply_to_user, status, created_at) VALUES
-(1, 11, 10001, '久坐小张', '2', '跟着第一天做完全身热，就是节奏有点快。', NULL, NULL, 1, NOW() - INTERVAL 3 DAY),
-(2, 11, 10002, '阿泽教练', '1', '第一天的动作放慢做也行，先把幅度做标准。', 1,  '久坐小张', 1, NOW() - INTERVAL 3 DAY + INTERVAL 20 MINUTE),
-(3, 11, 10003, '要考研的鹿', '0', '已打卡第三天，宿舍里没垫子就铺毛巾做的。', NULL, NULL, 1, NOW() - INTERVAL 1 DAY),
-(4, 12, 10004, '颈椎病人', '3', '第十二分钟那个转头动作我这边咔咔响，正常吗？', NULL, NULL, 1, NOW() - INTERVAL 2 DAY),
-(5, 13, 10005, '跑步入门', '4', '原来我一直在脚跟砸地，改过来膝盖真的不疼了。', NULL, NULL, 1, NOW() - INTERVAL 5 HOUR);
+-- ★root_id：一级为 0，回复填所属一级的 id；parent_id 只指向"直接回复的那一条"（渲染用）
+INSERT INTO t_course_comment (id, course_id, root_id, user_id, user_name, avatar_color, content, parent_id, reply_to_user, status, created_at) VALUES
+(1, 11, 0, 10001, '久坐小张', '2', '跟着第一天做完全身热，就是节奏有点快。',       NULL, NULL,         1, NOW() - INTERVAL 3 DAY),
+(2, 11, 1, 10002, '阿泽教练', '1', '第一天的动作放慢做也行，先把幅度做标准。',     1,    '久坐小张',   1, NOW() - INTERVAL 3 DAY + INTERVAL 20 MINUTE),
+(3, 11, 0, 10003, '要考研的鹿', '0', '已打卡第三天，宿舍里没垫子就铺毛巾做的。',   NULL, NULL,         1, NOW() - INTERVAL 1 DAY),
+(4, 12, 0, 10004, '颈椎病人', '3', '第十二分钟那个转头动作我这边咔咔响，正常吗？', NULL, NULL,         1, NOW() - INTERVAL 2 DAY),
+(5, 13, 0, 10005, '跑步入门', '4', '原来我一直在脚跟砸地，改过来膝盖真的不疼了。', NULL, NULL,         1, NOW() - INTERVAL 5 HOUR);
 
 -- 优惠券：四种组合都有（秒杀不限范围/秒杀限课程/普通不限/普通限门店）
 INSERT INTO t_coupon (id, title, coupon_type, threshold, discount, total, remain, limit_per_user,

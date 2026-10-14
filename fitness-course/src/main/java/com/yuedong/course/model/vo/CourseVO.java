@@ -104,6 +104,16 @@ public class CourseVO {
     private Integer ratingCount;
 
     /**
+     * 评论条数（<b>只有展示型课程 CONTENT 才有值</b>，D11）。
+     * <p>★可售课这一格是 null 而不是 0：两类课的"用户说的话"是两个东西
+     * （评论 vs 评价），给可售课显示"0 条评论"会让人以为这门课没人说话，
+     * 而它的真实口碑在 {@code ratingText} 那一格里。</p>
+     * <p>★和 ratingText 一样<b>在缓存之外填</b>（见 CourseServiceImpl#withStoreContext）：
+     * 详情整体缓存 30 分钟，评论数是"发一条就该 +1"的数，进缓存就变成"发了却看不见"。</p>
+     */
+    private Integer commentCount;
+
+    /**
      * 可执行动作：{@code [BUY]} / {@code [BUY, SECKILL]} / {@code [FREE]}。
      * <p>★后端算：卡片按钮由"课程类型 + 有没有进行中的秒杀"决定，
      * 前端自己拼就会在秒杀刚结束的那几十秒里给出过期按钮。</p>

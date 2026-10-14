@@ -16,6 +16,7 @@ import com.yuedong.course.api.dto.CourseWindowAdminDTO;
 import com.yuedong.course.api.dto.CourseWindowSaveDTO;
 import com.yuedong.course.cache.CacheWrapper;
 import com.yuedong.course.mapper.CoachMapper;
+import com.yuedong.course.mapper.CourseCommentMapper;
 import com.yuedong.course.mapper.CourseMapper;
 import com.yuedong.course.mapper.CourseStoreMapper;
 import com.yuedong.course.mapper.SeckillActivityMapper;
@@ -23,6 +24,7 @@ import com.yuedong.course.mapper.StoreMapper;
 import com.yuedong.course.model.entity.Coach;
 import com.yuedong.course.model.entity.CoachCourse;
 import com.yuedong.course.model.entity.Course;
+import com.yuedong.course.model.entity.CourseComment;
 import com.yuedong.course.model.entity.CourseStore;
 import com.yuedong.course.model.entity.SeckillActivity;
 import com.yuedong.course.model.entity.Store;
@@ -100,6 +102,8 @@ public class CourseServiceImpl implements CourseService {
 
     private final CourseMapper courseMapper;
     private final CourseStoreMapper courseStoreMapper;
+    /** 只为详情那一格"共 N 条评论"计数，评论的写路径在 CourseCommentServiceImpl */
+    private final CourseCommentMapper commentMapper;
     private final CoachMapper coachMapper;
     /** 只为"这门课有几位教练会教"这一个聚合，不写教练的任何状态 */
     private final com.yuedong.course.mapper.CoachCourseMapper coachCourseMapper;
@@ -310,6 +314,14 @@ public class CourseServiceImpl implements CourseService {
         // 但"4.8 分 / 12 条"是新评价一进来就该变的数，塞进缓存就会出现"评了却看不见"。
         // 所以缓存里<b>永远不含评分</b>，每次响应前单独取一次（一次批量 RPC，不是每条一次）
         fillCourseRatings(List.of(vo));
+
+        // ★评论数同理，而且只有展示课需要（可售课的口碑在 ratingText 那格）
+        if ("CONTENT".equals(vo.getKind())) {
+            Long comments = commentMapper.selectCount(new LambdaQueryWrapper<CourseComment>()
+                    .eq(CourseComment::getCourseId, vo.getId())
+                    .eq(CourseComment::getStatus, 1));
+            vo.setCommentCount(comments == null ? 0 : comments.intValue());
+        }
 
         if (storeId == null) {
             return vo;

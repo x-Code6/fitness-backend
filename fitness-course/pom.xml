@@ -70,6 +70,14 @@
             <artifactId>fitness-order-api</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <!-- 消费 user 服务的用户简况契约：D11 展示课评论要落"昵称 + 头像配色"快照。
+             ★评论不存 userId 让前端去查就行吗？不行——改名后历史评论会跟着变，
+             而且每条评论都要前端额外发一次请求。快照列是这一处的正解（同社区评论） -->
+        <dependency>
+            <groupId>com.yuedong</groupId>
+            <artifactId>fitness-user-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
     </dependencies>
 
     <build>
