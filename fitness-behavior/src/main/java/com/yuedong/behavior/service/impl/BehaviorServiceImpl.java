@@ -52,6 +52,9 @@ public class BehaviorServiceImpl implements BehaviorService {
                 message.put("deviceId", dto.getDeviceId());
                 message.put("userId", userId);
                 message.put("ts", event.getTs() == null ? System.currentTimeMillis() : event.getTs());
+                // ★props 原样带上：这是"从哪个位置点进来"这类问题的唯一载体。
+                //   以前整条链路把它丢了，库里就只剩 eventType + targetId，分析价值掉一半
+                message.put("props", event.getProps());
                 // key=deviceId → 同设备事件进同一分区，消费端按序处理
                 kafkaTemplate.send(MqConstants.BEHAVIOR_TOPIC, dto.getDeviceId(), objectMapper.writeValueAsString(message));
             } catch (Exception e) {

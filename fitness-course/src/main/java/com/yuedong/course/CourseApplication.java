@@ -18,8 +18,9 @@ import org.springframework.scheduling.annotation.EnableScheduling;
  */
 @EnableScheduling
 @EnableDiscoveryClient
-// 只按需引入 order 域的评分统计契约；取数失败一律降级为"暂无评分"，不影响列表出图
-@EnableFeignClients(basePackages = "com.yuedong.order.api")
+// 按需引入两个契约域：order 的评分统计（取数失败降级为"暂无评分"）、
+// user 的用户简况（D11 展示课评论要落昵称与头像配色快照，取数失败降级为默认昵称）
+@EnableFeignClients(basePackages = {"com.yuedong.order.api", "com.yuedong.user.api"})
 @MapperScan("com.yuedong.course.mapper")
 @SpringBootApplication(scanBasePackages = "com.yuedong")
 public class CourseApplication {

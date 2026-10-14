@@ -22,8 +22,13 @@ spring:
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
     consumer:
       group-id: yd-behavior-consumer
-      key-serializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-serializer: org.apache.kafka.common.serialization.StringDeserializer
+      # ★键名必须是 key-deserializer / value-deserializer。
+      #   这里以前写的是 key-serializer/value-serializer —— 那是<b>生产端</b>的属性名，
+      #   放在 consumer 节点下 Spring Boot 会当成未知属性直接忽略，
+      #   于是"看起来配了、实际用的是默认值"。默认值刚好也是 String 反序列化器所以没出事，
+      #   但这类"配置写了不生效"是排查成本最高的一类错：日志不报、行为不变、只有换实现时才炸
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
   cloud:
     nacos:
       discovery:
