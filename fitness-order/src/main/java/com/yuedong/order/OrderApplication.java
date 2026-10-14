@@ -16,7 +16,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
  */
 @EnableDiscoveryClient
 @EnableScheduling
-@EnableFeignClients(basePackages = "com.yuedong.course.api")  // 按需只引入课程域的 Feign 契约
+@EnableFeignClients(basePackages = {"com.yuedong.course.api", "com.yuedong.user.api"})
 @MapperScan("com.yuedong.order.mapper")
 @SpringBootApplication(scanBasePackages = "com.yuedong")
 public class OrderApplication {

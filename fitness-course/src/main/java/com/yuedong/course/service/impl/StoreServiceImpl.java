@@ -80,6 +80,8 @@ public class StoreServiceImpl implements StoreService, ApplicationRunner {
     private final CoachMapper coachMapper;
     private final CourseStoreMapper courseStoreMapper;
     private final StringRedisTemplate redis;
+    /** 门店评分来自 order 域（评价明细与统计都在 yd_order），这里只读 */
+    private final com.yuedong.order.api.client.RatingClient ratingClient;
 
     /** 应用启动完成后把全部门店写入 Redis GEO（幂等：先删 key 再灌） */
     @Override
@@ -147,7 +149,47 @@ public class StoreServiceImpl implements StoreService, ApplicationRunner {
                     courseCounts.getOrDefault(store.getId(), 0)));
         }
         result.sort(Comparator.comparingDouble(StoreVO::getDistance));
+        fillRatings(result);
         return result;
+    }
+
+    /**
+     * 批量填门店评分摘要（一次 RPC 拿一屏门店的分数）。
+     *
+     * <p>★取不到只打 warn：门店列表是用户选店的第一屏，
+     * 不能让"order 服务抖一下"把它变成空白页。留 null 就是"暂无评分"，
+     * 和"0 分"是两种状态，前端按 null 渲染不显示星标即可。</p>
+     */
+    private void fillRatings(List<StoreVO> vos) {
+        if (vos.isEmpty()) {
+            return;
+        }
+        List<Long> ids = new ArrayList<>();
+        for (StoreVO vo : vos) {
+            if (vo.getId() != null && !ids.contains(vo.getId())) {
+                ids.add(vo.getId());
+            }
+        }
+        try {
+            com.yuedong.common.result.Result<List<com.yuedong.order.api.dto.RatingStatsDTO>> statsResult =
+                    ratingClient.stats("STORE", ids);
+            if (statsResult.getCode() != 0 || statsResult.getData() == null) {
+                return;
+            }
+            Map<Long, com.yuedong.order.api.dto.RatingStatsDTO> statsMap = new HashMap<>();
+            for (com.yuedong.order.api.dto.RatingStatsDTO stat : statsResult.getData()) {
+                statsMap.put(stat.getTargetId(), stat);
+            }
+            for (StoreVO vo : vos) {
+                com.yuedong.order.api.dto.RatingStatsDTO stat = statsMap.get(vo.getId());
+                if (stat != null) {
+                    vo.setRatingText(stat.getAvgText());
+                    vo.setRatingCount(stat.getRatingCount());
+                }
+            }
+        } catch (Exception e) {
+            log.warn("取门店评分失败，列表按\"暂无评分\"渲染: ids={}", ids, e);
+        }
     }
 
     /**
@@ -308,7 +350,8 @@ public class StoreServiceImpl implements StoreService, ApplicationRunner {
                 .distanceText(distanceText)
                 .address(store.getAddress())
                 .image(store.getImage())
-                // ratingText/ratingCount 留 null：评分在 yd_order，本期未接跨服务批量取分
+                // ratingText/ratingCount 不在这里填：评分在 yd_order，由 nearby() 末尾
+                // 一次批量 RPC 统一补（★组装函数保持纯粹，跨服务取数集中一处好排查）
                 .tags(tags)
                 .openHoursText(store.getOpenHoursText())
                 .phone(store.getPhone())
