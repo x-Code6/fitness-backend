@@ -15,7 +15,7 @@ spring:
   cloud:
     nacos:
       discovery:
-        # 默认值指向测试 VM；整套上 VM 后用环境变量 NACOS_ADDR 覆盖（值可以是容器名 fitness-nacos）
+        # 默认值指向测试 VM；整套上 VM 后用环境变量 NACOS_ADDR 覆盖（值可以是容器名 nacos）
         server-addr: ${NACOS_ADDR:192.168.150.105:8848}
     gateway:
       # CORS 统一在网关处理（各服务不再配置，避免重复头）
