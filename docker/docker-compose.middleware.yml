@@ -43,7 +43,7 @@
 #   nacos-server:v2.4.3 与 ACR 的 nacos-server:v2.5.4 镜像 ID 相同（cedf09a98a79）；
 #   nginx:1.27-alpine 与 ACR 的 nginx:1.28-alpine 镜像 ID 相同（0dcc88822d45）。
 #   想知道 Nacos 到底是什么版本（决定控制台是 8848 还是 3.x 的独立 8080 端口），
-#   别猜：docker logs fitness-nacos 2>&1 | head -20 看启动行，或看控制台页脚版本号。
+#   别猜：docker logs nacos 2>&1 | head -20 看启动行，或看控制台页脚版本号。
 #
 #
 # ★ 为什么这里没有 Sentinel：代码里目前零引用（所有 pom.xml 和 application.yml 都搜不到
@@ -104,7 +104,7 @@
 #      Administration → Features 里要能看到 delayed message exchange（没有就是插件丢了）
 #   4. 数据库客户端连 VM_IP:3306            应看到 yd_user/yd_course/yd_order/
 #      yd_point/yd_behavior/yd_admin/yd_community 七个库；少一个就是 SQL 没导入成功
-#   5. docker exec -it fitness-mysql mysql -uroot -p123456 -e "show databases;"
+#   5. docker exec -it mysql mysql -uroot -p123456 -e "show databases;"
 #   6. 先起 course 再起 order，Nacos 里出现两个实例后，用 gateway 走一次登录 + 列表，
 #      通了说明"中间件 + 服务 + 注册发现"这条链路完整。
 #   7. 走 Nginx 的那一段：浏览器开 http://VM_IP/api/course/list
@@ -217,16 +217,19 @@ services:
     # rabbitmq:3.13-management，所以照实写它。
     # ⚠️⚠️ 但延迟插件必须实测确认 —— 这是本文件唯一还没落实的风险 ⚠️⚠️
     # 订单服务把 ex.order.delay 声明成 x-delayed-message 类型的交换机
-    # （fitness-order/mq/RabbitConfig.java），缺插件时 order 一启动就报
-    # unknown exchange type，后果是"15 分钟未支付自动取消"整条链路静默失效。
+    # （fitness-order/mq/RabbitConfig.java）。缺插件时的表现要说清楚：
+    # ★order 不会因此启动失败——声明交换机是 RabbitAdmin 在后台线程做的，
+    #   它只会刷一行 "unknown exchange type 'x-delayed-message'" 的通道错误，
+    #   服务照常起、接口照常通，唯独延迟消息发不出去 →
+    #   "下单 15 分钟未支付自动取消"整条链路静默失效（订单一直挂在待支付）。
     # 官方 3.13 镜像到底带不带这个插件，网上说法不一致，别信任何人的记忆（包括我的）——
     # 容器起来后花十秒实测：
-    #   docker exec fitness-rabbitmq rabbitmq-plugins list | grep -i delayed
+    #   docker exec rabbitmq rabbitmq-plugins list | grep -i delayed
     # 三种结果对应三种做法：
     #   [E*] → 已启用，什么都不用做（最理想）。
     #   [e ] → 插件在镜像里但没启用，一条命令搞定（节点正在跑，不用 --offline）：
-    #          docker exec fitness-rabbitmq rabbitmq-plugins enable rabbitmq_delayed_message_exchange
-    #          然后 docker restart fitness-rabbitmq，再查一次变成 [E*] 就对了。
+    #          docker exec rabbitmq rabbitmq-plugins enable rabbitmq_delayed_message_exchange
+    #          然后 docker restart rabbitmq，再查一次变成 [E*] 就对了。
     #   没有 → 镜像里真没有。别去下载 .ez（这机器连不上外网仓库），用你自己那套现成的：
     #          Windows 的 F:/生活工具小程序/rabbitmq 目录里就有 Dockerfile + .ez，
     #          lifetools-rabbitmq:3.13-delayed 那台就是这么 build 出来的。
@@ -249,21 +252,35 @@ services:
       # ⚠️ 这两个值<b>只在数据目录为空的首次启动生效</b>。已经起过一次之后改这里没用，
       #   broker 里还是老账号，表现是后端一直 ACCESS_REFUSED。改口令用 rabbitmqctl，
       #   别用 down -v（那个卷是 rabbitmq-data，但同文件的 mysql-data 会被一起删掉，库里数据清零）：
-      #     docker exec fitness-rabbitmq rabbitmqctl list_users                       # 看现在有谁
-      #     docker exec fitness-rabbitmq rabbitmqctl add_user    新账号 新口令
-      #     docker exec fitness-rabbitmq rabbitmqctl set_permissions -p / 新账号 ".*" ".*" ".*"
+      #     docker exec rabbitmq rabbitmqctl list_users                       # 看现在有谁
+      #     docker exec rabbitmq rabbitmqctl add_user    新账号 新口令
+      #     docker exec rabbitmq rabbitmqctl set_permissions -p / 新账号 ".*" ".*" ".*"
       RABBITMQ_DEFAULT_USER: ${MQ_USER:-fitness}
       RABBITMQ_DEFAULT_PASS: ${MQ_PASS:-fitness123}
       RABBITMQ_DEFAULT_VHOST: /                  # 后端没配 vhost，用的就是默认的 /
-      RABBITMQ_VM_MEMORY_HIGH_WATERMARK: 400M    # 到 400M 就阻塞生产者，护住整台 VM
+      # ★这里以前写着 RABBITMQ_VM_MEMORY_HIGH_WATERMARK: 400M，3.13 的镜像会因为它直接退出：
+      #   error: RABBITMQ_VM_MEMORY_HIGH_WATERMARK is set but deprecated
+      #   error: deprecated environment variables detected
+      #   从 3.13 起，凡是"RABBITMQ_ + 某个配置项名字"这种环境变量都算废弃写法（配置项要走
+      #   rabbitmq.conf），镜像的启动脚本检测到就报错走人。注意 RABBITMQ_DEFAULT_USER/PASS/VHOST
+      #   不在废弃之列——它们是这个 Docker 镜像自己的变量，不是配置项映射。
+      #   内存水位不用另设：下面的 mem_limit: 512m 已经把容器限住了，
+      #   RabbitMQ 能读到 cgroup 限额，按默认比例 0.4 算出水位≈204M，比手写 400M 更保守。
       TZ: Asia/Shanghai
     ports:
       - "5672:5672"
       - "15672:15672"                # 管理台 http://VM_IP:15672 （fitness / fitness123）
     volumes:
-      # 这个卷存队列数据 + 已启用插件的记录 + 账号，必须挂；
-      # 不挂的话每次重建容器都要重新 enable 插件、账号也会丢。
+      # 这个卷存的是队列数据与账号（/var/lib/rabbitmq 下的 mnesia）。
+      # ★注意"已启用插件的记录"不在这儿：它在容器自己的 /etc/rabbitmq/enabled_plugins 里，
+      #   重建容器（up -d --force-recreate、换镜像、改 env 都会触发）就没了。
+      #   所以手动 rabbitmq-plugins enable 只救急，长期得用带插件的镜像（见上面 230 行那段）。
       - rabbitmq-data:/var/lib/rabbitmq
+      # 内存水位配置（3.13 已废弃同名环境变量，不给配置文件就只能吃默认比例）。
+      # 这个文件必须 scp 上去；路径写歪的话 Docker 会建一个【空目录】顶上来，
+      # 报 "mount ... not a directory"，删掉误建的空目录放好真文件即可。
+      # 不想多带一个文件就把这三行删掉——容器照样起，只是水位按"它看到的总内存×0.4"算。
+      - ./rabbitmq/30-memory.conf:/etc/rabbitmq/conf.d/30-memory.conf:ro
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 15s
@@ -320,7 +337,7 @@ services:
     # VM 上的 tag 是 kafka:3.9.2（不带 apache/ 前缀），照它写。
     # ⚠️ 下面的参数名用的是官方 apache/kafka 那套 KAFKA_XXX_YYY 风格。
     #   如果这镜像其实是 bitnami 系（要 KAFKA_CFG_XXX 前缀），表现是"容器起来了但
-    #   KRaft/监听器配置没生效"。核对：docker logs fitness-kafka 2>&1 | head -30
+    #   KRaft/监听器配置没生效"。核对：docker logs kafka 2>&1 | head -30
     image: kafka:3.9.2
     container_name: kafka
     restart: unless-stopped
@@ -329,7 +346,7 @@ services:
       - "9092:9092"
     environment:
       # ★★ 本文件唯一必须改的参数：把 VM_IP 换成 VM 的真实局域网 IP（或同目录 .env 里给）★★
-      #   自检：docker exec fitness-kafka hostname -i 之后，在 Windows 上
+      #   自检：docker exec kafka hostname -i 之后，在 Windows 上
       #        telnet/ping 这个 IP 的 9092，不通就是这里没改对。
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://${VM_IP:-192.168.150.105}:9092
       KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
@@ -350,7 +367,7 @@ services:
       # 保证同设备有序，1 分区对测试环境正好
       TZ: Asia/Shanghai
       # 想手动建 3 分区的 topic（体验分区并行）：
-      #   docker exec fitness-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server 127.0.0.1:9092 \
+      #   docker exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server 127.0.0.1:9092 \
       #     --create --topic yd-behavior-event --partitions 3 --replication-factor 1
       # 注意：topic 已存在时这条命令会报错，先 --list 看一眼。
     # ⚠️ 这里故意不给 Kafka 挂数据卷：Kafka 的日志目录和 KRaft 元数据格式化路径要配套改
@@ -423,6 +440,6 @@ networks:
 #      location，或者干脆把上传目录挂进 Nginx 当静态资源服务。
 #
 # 改了 nginx.conf 之后不用重建容器：
-#   docker exec fitness-nginx nginx -t        # 先语法自检
-#   docker exec fitness-nginx nginx -s reload # 再热加载
+#   docker exec nginx nginx -t        # 先语法自检
+#   docker exec nginx nginx -s reload # 再热加载
 # ============================================================================
