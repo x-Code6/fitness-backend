@@ -213,32 +213,34 @@ services:
   # 3) RabbitMQ 3.13 + 延迟消息插件 —— 秒杀削峰 / 订单 15 分钟超时取消 / 站内通知
   # ==========================================================================
   rabbitmq:
-    # VM 上没有那个自建镜像（lifetools-rabbitmq:3.13-delayed），只有官方的
-    # rabbitmq:3.13-management，所以照实写它。
-    # ⚠️⚠️ 但延迟插件必须实测确认 —— 这是本文件唯一还没落实的风险 ⚠️⚠️
-    # 订单服务把 ex.order.delay 声明成 x-delayed-message 类型的交换机
-    # （fitness-order/mq/RabbitConfig.java）。缺插件时的表现要说清楚：
-    # ★order 不会因此启动失败——声明交换机是 RabbitAdmin 在后台线程做的，
-    #   它只会刷一行 "unknown exchange type 'x-delayed-message'" 的通道错误，
-    #   服务照常起、接口照常通，唯独延迟消息发不出去 →
-    #   "下单 15 分钟未支付自动取消"整条链路静默失效（订单一直挂在待支付）。
-    # 官方 3.13 镜像到底带不带这个插件，网上说法不一致，别信任何人的记忆（包括我的）——
-    # 容器起来后花十秒实测：
-    #   docker exec rabbitmq rabbitmq-plugins list | grep -i delayed
-    # 三种结果对应三种做法：
-    #   [E*] → 已启用，什么都不用做（最理想）。
-    #   [e ] → 插件在镜像里但没启用，一条命令搞定（节点正在跑，不用 --offline）：
-    #          docker exec rabbitmq rabbitmq-plugins enable rabbitmq_delayed_message_exchange
-    #          然后 docker restart rabbitmq，再查一次变成 [E*] 就对了。
-    #   没有 → 镜像里真没有。别去下载 .ez（这机器连不上外网仓库），用你自己那套现成的：
-    #          Windows 的 F:/生活工具小程序/rabbitmq 目录里就有 Dockerfile + .ez，
-    #          lifetools-rabbitmq:3.13-delayed 那台就是这么 build 出来的。
-    #          scp 上 VM → docker build -t lifetools-rabbitmq:3.13-delayed .
-    #          → 把下面 image 行换成它 → docker compose -f ... up -d rabbitmq
-    # 顺带纠正一条你刚才敲的命令：docker exec 要的是【容器名或容器 ID】，不是镜像名，
-    # 而且那时容器还没起来，所以报 No such container。查镜像用：
-    #   docker run --rm --entrypoint sh rabbitmq:3.13-management -c 'ls /opt/rabbitmq/plugins'
-    image: rabbitmq:3.13-management
+    # ★用自建镜像：官方 rabbitmq:3.13-management <b>不带</b>延迟消息插件，
+    #   而订单服务把 ex.order.delay 声明成 x-delayed-message 类型的交换机
+    #   （fitness-order/mq/RabbitConfig.java）。缺插件时 order <b>不会</b>启动失败——
+    #   声明交换机是 RabbitAdmin 在后台线程做的，它只刷一行
+    #   "unknown exchange type 'x-delayed-message'" 的通道错误，服务照常起、接口照常通，
+    #   唯独延迟消息发不出去 → "下单 15 分钟未支付自动取消"整条链路静默失效。
+    #   这种"活着但断了"最难查，所以宁可一开始就把插件装进镜像。
+    #
+    # 镜像怎么做（这台 VM 连不上外网仓库，插件用 Windows 上现成的 .ez，全程离线）：
+    #   1) Windows 上把三个文件传过去（Dockerfile + .ez + 那个 conf，conf 本文件用不到，带上无妨）：
+    #        ssh root@VM_IP mkdir -p /root/fitness/rabbitmq
+    #        scp F:/生活工具小程序/rabbitmq/Dockerfile root@VM_IP:/root/fitness/rabbitmq/
+    #        scp F:/生活工具小程序/rabbitmq/rabbitmq_delayed_message_exchange-3.13.0.ez root@VM_IP:/root/fitness/rabbitmq/
+    #   2) VM 上构建（FROM 那一行用的就是本地已有的 rabbitmq:3.13-management，不会去拉外网）：
+    #        cd /root/fitness/rabbitmq && docker build -t lifetools-rabbitmq:3.13-delayed .
+    #   3) 起容器：docker compose -f docker-compose.middleware.yml up -d rabbitmq
+    #   4) 验证插件真的在里面（这步别省，见下面的实测口径）：
+    #        docker exec rabbitmq rabbitmq-plugins list | grep -i delayed   # 要看到 [E*]
+    #
+    # ⚠️ 为什么不用"官方镜像 + 手动 enable"：enabled_plugins 落在容器自己的
+    #    /etc/rabbitmq/enabled_plugins，<b>不在 rabbitmq-data 卷里</b>。
+    #    手动 enable 之后一旦 up -d --force-recreate / 换 image / 改 env，插件就又没了，
+    #    而下一次你根本不会想到去查它。装进镜像是一次性了断。
+    # ⚠️ .ez 的版本必须和 RabbitMQ 小版本对得上（这里是 3.13.0 ↔ 3.13.x），
+    #    对不上时 enable 会报 plugins_not_found 或加载失败。
+    # 万一暂时不想 build，把下一行换成官方镜像也能起，只是上面那条超时取消链路是断的：
+    #   image: rabbitmq:3.13-management
+    image: lifetools-rabbitmq:3.13-delayed
     container_name: rabbitmq
     restart: unless-stopped
     mem_limit: 512m
