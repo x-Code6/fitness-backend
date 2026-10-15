@@ -26,6 +26,19 @@
             <groupId>com.alibaba.cloud</groupId>
             <artifactId>spring-cloud-starter-alibaba-nacos-discovery</artifactId>
         </dependency>
+        <!-- Feign 声明式调用 + 客户端负载均衡。
+             ★这两个必须显式写：编译期能从 fitness-order-api / fitness-user-api 里
+             传递拿到 openfeign，所以代码能编过；但运行期"按服务名找实例"这件事
+             靠的是 loadbalancer，它不在传递依赖里，缺了就是启动报
+             No Feign Client for loadBalancing defined（本地第一次真跑才暴露）。 -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-openfeign</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-loadbalancer</artifactId>
+        </dependency>
         <dependency>
             <groupId>com.baomidou</groupId>
             <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
