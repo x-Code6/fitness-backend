@@ -65,7 +65,7 @@
 # 内存预算（按 VM 只给 6G 算，8G 也照这份配、不必改）
 #   mysql  700m   （InnoDB buffer pool 压到 256M，够跑 7 个库）
 #   redis  300m   （maxmemory 256mb）
-#   rabbit 512m   （内存高水位 400M）
+#   rabbit 900m   （空跑就占 270~344M，水位配 600MiB，见 rabbitmq/30-memory.conf）
 #   nacos  700m   （堆显式压到 512m；之前实测不设时是 1g，小 VM 上就是它先撑爆的）
 #   kafka  768m   （堆 512m）
 #   nginx   64m   （很轻）
@@ -128,6 +128,19 @@
 #   ./nginx/nginx.conf → 建了个【目录】顶替配置文件 → 报
 #             "mount … not a directory: Are you trying to mount a directory onto a file"
 # 修法是删掉那个被误建的空目录、把真文件放到位（先 ls -A 确认里面确实是空的）。
+#
+# ★★ 2026-10-15 实测：这台 VM 上真正在跑的那一份不在 /root，而在 /fitness/docker ★★★
+#   别按目录名猜，用容器上的 label 反查（一次就准）：
+#     docker inspect -f '{{index .Config.Labels "com.docker.compose.project.config_files"}}' mysql
+#     → /fitness/docker/docker-compose.middleware.yml（compose 项目名 = docker）
+#   由此带出两个坑：
+#   ① /root 下那份是旧的，容器名还写着 fitness-mysql 这种前缀版，而实际跑起来的容器是短名
+#      （mysql/redis/rabbitmq/nacos/kafka/nginx）。在 /root 里 up -d 会得到一批"另一套"容器，
+#      端口撞 3306/6379 只是最先露出来的那个症状。
+#   ② compose 的项目名决定卷名前缀，所以机器上现在同时有 docker_*-data 和 root_*-data 两套卷。
+#      数据在 docker_* 这套里（7 个 yd_* 库实测都在），root_* 是那份旧文件留下的死卷。
+#      清理前务必先确认没容器在用：docker ps -a 看 Mounts，再 docker volume rm。
+#      ★别顺手 docker system prune —— 未使用的卷会被连带删掉。
 # ============================================================================
 services:
 
@@ -213,37 +226,32 @@ services:
   # 3) RabbitMQ 3.13 + 延迟消息插件 —— 秒杀削峰 / 订单 15 分钟超时取消 / 站内通知
   # ==========================================================================
   rabbitmq:
-    # ★用自建镜像：官方 rabbitmq:3.13-management <b>不带</b>延迟消息插件，
-    #   而订单服务把 ex.order.delay 声明成 x-delayed-message 类型的交换机
-    #   （fitness-order/mq/RabbitConfig.java）。缺插件时 order <b>不会</b>启动失败——
-    #   声明交换机是 RabbitAdmin 在后台线程做的，它只刷一行
-    #   "unknown exchange type 'x-delayed-message'" 的通道错误，服务照常起、接口照常通，
-    #   唯独延迟消息发不出去 → "下单 15 分钟未支付自动取消"整条链路静默失效。
-    #   这种"活着但断了"最难查，所以宁可一开始就把插件装进镜像。
+    # ★延迟消息插件：这台 VM 上本地那个 rabbitmq:3.13-management <b>已经内置并默认启用</b>，
+    #   不用再自建镜像。2026-10-15 实测（别看镜像名推理，实测才算）：
+    #     docker exec rabbitmq rabbitmq-plugins list | grep -i delayed
+    #       → [E*] rabbitmq_delayed_message_exchange 3.13.0
+    #   订单 15 分钟超时取消依赖的 ex.order.delay，在 order 第一次连上之后确实建成了
+    #   x-delayed-message 类型（rabbitmqctl list_exchanges 核对过）。
     #
-    # 镜像怎么做（这台 VM 连不上外网仓库，插件用 Windows 上现成的 .ez，全程离线）：
-    #   1) Windows 上把三个文件传过去（Dockerfile + .ez + 那个 conf，conf 本文件用不到，带上无妨）：
-    #        ssh root@VM_IP mkdir -p /root/fitness/rabbitmq
-    #        scp F:/生活工具小程序/rabbitmq/Dockerfile root@VM_IP:/root/fitness/rabbitmq/
-    #        scp F:/生活工具小程序/rabbitmq/rabbitmq_delayed_message_exchange-3.13.0.ez root@VM_IP:/root/fitness/rabbitmq/
-    #   2) VM 上构建（FROM 那一行用的就是本地已有的 rabbitmq:3.13-management，不会去拉外网）：
-    #        cd /root/fitness/rabbitmq && docker build -t lifetools-rabbitmq:3.13-delayed .
-    #   3) 起容器：docker compose -f docker-compose.middleware.yml up -d rabbitmq
-    #   4) 验证插件真的在里面（这步别省，见下面的实测口径）：
-    #        docker exec rabbitmq rabbitmq-plugins list | grep -i delayed   # 要看到 [E*]
-    #
-    # ⚠️ 为什么不用"官方镜像 + 手动 enable"：enabled_plugins 落在容器自己的
-    #    /etc/rabbitmq/enabled_plugins，<b>不在 rabbitmq-data 卷里</b>。
-    #    手动 enable 之后一旦 up -d --force-recreate / 换 image / 改 env，插件就又没了，
-    #    而下一次你根本不会想到去查它。装进镜像是一次性了断。
-    # ⚠️ .ez 的版本必须和 RabbitMQ 小版本对得上（这里是 3.13.0 ↔ 3.13.x），
-    #    对不上时 enable 会报 plugins_not_found 或加载失败。
-    # 万一暂时不想 build，把下一行换成官方镜像也能起，只是上面那条超时取消链路是断的：
-    #   image: rabbitmq:3.13-management
-    image: lifetools-rabbitmq:3.13-delayed
+    # ⚠️ 为什么这里不能想当然：这台机器上挂着"rabbitmq:3.13-management"这个名字的镜像有两个，
+    #    ID 不一样（38651925b203 与 ACR 全名那份 9cfb7e92ae7d），带插件的是本地短名这一份。
+    #    所以换机器 / 换 tag 时，上面那条 plugins list 必须重跑一次。
+    #    万一发现真没有：F:/生活工具小程序/rabbitmq 里有 Dockerfile + 3.13.0 的 .ez，
+    #    scp 上去 docker build 一个自带插件的镜像即可（.ez 版本要和 RabbitMQ 小版本对齐）。
+    # ⚠️ 也别用"官方镜像 + 手动 rabbitmq-plugins enable"长期顶着：enabled_plugins 落在
+    #    容器自己的 /etc/rabbitmq 下，<b>不在 rabbitmq-data 卷里</b>，一旦换 image /
+    #    --force-recreate 就又没了，而下一次你根本不会想到去查它。
+    # ⚠️ 缺插件时的表现要说清楚：order <b>不会</b>启动失败——声明交换机是 RabbitAdmin
+    #    在后台线程做的，它只刷一行 unknown exchange type，服务照常起、接口照常通，
+    #    唯独延迟消息发不出去。这种"活着但链路断了"最难查。
+    image: rabbitmq:3.13-management
     container_name: rabbitmq
     restart: unless-stopped
-    mem_limit: 512m
+    # 512m 不够：2026-10-15 实测这个 broker 空跑（零队列零消息）RSS 就已经 344M，
+    # 管理台 + prometheus 两个插件本身就吃百来兆。限 512m 时水位无论怎么设都贴着用量，
+    # 稍有消息就触发内存告警 → 生产者被阻塞（表现是"发消息卡住不动"，不是报错）。
+    # 这台 VM 有 7.6G，给它 900m，水位配 600MiB（见 ./rabbitmq/30-memory.conf）。
+    mem_limit: 900m
     environment:
       # ★ 故意不用 guest 账号：RabbitMQ 默认禁止 guest 从"非本机"登录，
       #   而你的后端跑在 Windows 上，连 VM 的 5672 属于远程连接 → 会被直接拒。
@@ -266,8 +274,10 @@ services:
       #   从 3.13 起，凡是"RABBITMQ_ + 某个配置项名字"这种环境变量都算废弃写法（配置项要走
       #   rabbitmq.conf），镜像的启动脚本检测到就报错走人。注意 RABBITMQ_DEFAULT_USER/PASS/VHOST
       #   不在废弃之列——它们是这个 Docker 镜像自己的变量，不是配置项映射。
-      #   内存水位不用另设：下面的 mem_limit: 512m 已经把容器限住了，
-      #   RabbitMQ 能读到 cgroup 限额，按默认比例 0.4 算出水位≈204M，比手写 400M 更保守。
+      #   水位只能走配置文件：mem_limit 只决定容器的硬上限，RabbitMQ 自己的水位算的是
+      #   "它看到的总内存 × 比例"，两者不是一回事——所以既要把容器放宽（上面 900m），
+      #   也要把水位配成绝对值（下面挂的 30-memory.conf，600MiB），两个数都得实测出来，
+      #   拍脑袋的 256MiB 会让 broker 空跑就贴着水位，来消息就阻塞生产者。
       TZ: Asia/Shanghai
     ports:
       - "5672:5672"
@@ -383,7 +393,14 @@ services:
     healthcheck:
       # 用 Kafka 自带脚本探活；镜像里脚本路径不同就把命令换成
       # ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server 127.0.0.1:9092"]
-      test: ["CMD-SHELL", "kafka-broker-api-versions.sh --bootstrap-server 127.0.0.1:9092 >/dev/null 2>&1"]
+      # ★必须写绝对路径。2026-10-15 实测：裸写 kafka-broker-api-versions.sh 在这个镜像里
+      #   是 command not found，健康检查连续 173 次退出码 127 → docker ps 永远显示 unhealthy，
+      #   而 broker 其实是好的（behavior 的消费组正常 join、日志正常滚动）。
+      #   这种"红字骗人"的状态最耗时间，所以顺手改对：脚本在 /opt/kafka/bin 下，不在 PATH 里。
+      #   注意改这一行会让 compose 认为 kafka 配置变了，下次 up -d 会<b>重建 kafka 容器</b>；
+      #   而数据目录现在是镜像自带的匿名卷（见上面那段），重建就等于 topic 与消费位移清零。
+      #   要重建就先把上面注释里的 kafka-data 命名卷加上，一次性解决。
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server 127.0.0.1:9092 >/dev/null 2>&1"]
       interval: 30s
       timeout: 15s
       retries: 8
