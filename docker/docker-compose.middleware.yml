@@ -73,12 +73,25 @@
 #   ⚠️ 别把 VM 开到 8G：宿主机 Windows 本来就只剩一点空闲，VM 越大越卡。
 #
 # ---------------------------------------------------------------------------
-# 后端（IDEA 运行配置）要配套的环境变量，VM_IP 换成你的 VM 地址：
+# ★没有 .env 时，本文件里所有 ${X:-默认} 用的就是冒号后面那个默认值。
+#   其中三个默认值在"VM 地址不是 192.168.150.100"时必须处理，否则服务起不来：
+#     ① KAFKA_ADVERTISED_LISTENERS 里的 VM_IP（默认 192.168.150.100）——
+#        写成别的地址，Kafka 客户端就会去连那个地址，behavior/community 直接连不上；
+#     ② RABBITMQ_DEFAULT_USER/PASS（默认 fitness / fitness123）——
+#        ★这两个变量**只在数据目录为空的第一次启动生效**。已经起过一次之后再改 .env，
+#        broker 里仍是老账号，表现是后端一直 ACCESS_REFUSED；
+#     ③ MySQL 的 DB_PASS（默认 123456）—— 同样只在首次初始化生效，改法见 mysql 那段的注释。
+#   → 所以正解是建一个 .env 写 VM_IP，然后 up -d 让 compose 重建 env 变了的那个容器。
+#     ⚠️ 不要用 down -v，那会连数据卷一起删（库里的数据清零）。
+#
+# 后端（IDEA 运行配置）的环境变量。★现在各服务 application.yml 的默认值已经指向测试 VM，
+#   所以"本机 Windows 跑后端 + VM 跑中间件"这一种形态**一个变量都不用设**；下面这份留着
+#   是为了换 IP / 整套上 VM 时对照着覆盖：
 #   DB_HOST=VM_IP  DB_PORT=3306  DB_USER=root  DB_PASS=123456
 #   NACOS_ADDR=VM_IP:8848
-#   REDIS_HOST=VM_IP        # course/point/behavior 用这个
-#   REDIS_ADDR=VM_IP        # gateway/user 用这个（两份 yml 键名不统一，两个都得给）
-#   MQ_HOST=VM_IP  MQ_USER=fitness  MQ_PASS=fitness123   # 见下面 rabbitmq 的警告
+#   REDIS_HOST=VM_IP        # ★全部服务（含 gateway/user）都是这一个键名了，以前 user/gateway
+#                           #   读 REDIS_ADDR、别的读 REDIS_HOST，要设两个 —— 已统一
+#   MQ_HOST=VM_IP  MQ_USER=fitness  MQ_PASS=fitness123   # 与 broker 里真实存在的账号一致即可，见上面 ②
 #   KAFKA_ADDR=VM_IP:9092
 #   TOKEN_CHECK=true        # 想跳过登录鉴权先调接口时设 false
 # 服务注册问题备忘：后端在 Windows 上注册到 Nacos 的实例 IP 是你 Windows 的局域网 IP，
