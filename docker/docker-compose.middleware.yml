@@ -73,30 +73,27 @@
 #   ⚠️ 别把 VM 开到 8G：宿主机 Windows 本来就只剩一点空闲，VM 越大越卡。
 #
 # ---------------------------------------------------------------------------
-# ★没有 .env 时，本文件里所有 ${X:-默认} 用的就是冒号后面那个默认值。
-#   其中三个默认值在"VM 地址不是 192.168.150.100"时必须处理，否则服务起不来：
-#     ① KAFKA_ADVERTISED_LISTENERS 里的 VM_IP（默认 192.168.150.100）——
-#        写成别的地址，Kafka 客户端就会去连那个地址，behavior/community 直接连不上；
-#     ② RABBITMQ_DEFAULT_USER/PASS（默认 fitness / fitness123）——
-#        ★这两个变量**只在数据目录为空的第一次启动生效**。已经起过一次之后再改 .env，
-#        broker 里仍是老账号，表现是后端一直 ACCESS_REFUSED；
-#     ③ MySQL 的 DB_PASS（默认 123456）—— 同样只在首次初始化生效，改法见 mysql 那段的注释。
-#   → 所以正解是建一个 .env 写 VM_IP，然后 up -d 让 compose 重建 env 变了的那个容器。
-#     ⚠️ 不要用 down -v，那会连数据卷一起删（库里的数据清零）。
+# ★没有 .env 文件时，本文件里所有 ${X:-默认} 用的就是冒号后面那个默认值。
+#   两个"只在第一次生效"的坑：
+#     ① RABBITMQ_DEFAULT_USER/PASS（fitness / fitness123）和 MySQL 的 DB_PASS（123456）
+#        只在【数据目录为空的首次启动】生效。已经起过一次之后再改这里，broker 里
+#        仍是老账号，表现是后端一直 ACCESS_REFUSED 或直接连不上库；改法见各自服务段。
+#     ② KAFKA_ADVERTISED_LISTENERS 是"中间件回吐给客户端的地址"，改后端 yml 没用，
+#        必须在这里改（默认值已写成本项目 VM 的 192.168.150.105）。
+#   ⚠️ 不要用 docker compose down -v：连数据卷一起删，mysql-data 里的库会清零。
 #
-# 后端（IDEA 运行配置）的环境变量。★现在各服务 application.yml 的默认值已经指向测试 VM，
-#   所以"本机 Windows 跑后端 + VM 跑中间件"这一种形态**一个变量都不用设**；下面这份留着
-#   是为了换 IP / 整套上 VM 时对照着覆盖：
+# 后端（IDEA 运行配置）要配套的环境变量，VM_IP 换成你的 VM 地址：
 #   DB_HOST=VM_IP  DB_PORT=3306  DB_USER=root  DB_PASS=123456
 #   NACOS_ADDR=VM_IP:8848
-#   REDIS_HOST=VM_IP        # ★全部服务（含 gateway/user）都是这一个键名了，以前 user/gateway
-#                           #   读 REDIS_ADDR、别的读 REDIS_HOST，要设两个 —— 已统一
-#   MQ_HOST=VM_IP  MQ_USER=fitness  MQ_PASS=fitness123   # 与 broker 里真实存在的账号一致即可，见上面 ②
+#   REDIS_HOST=VM_IP        # 全部服务（含 gateway/user）都是这一个键名了
+#   MQ_HOST=VM_IP  MQ_USER=fitness  MQ_PASS=fitness123   # 与 broker 里真实账号一致，见上面 ①
 #   KAFKA_ADDR=VM_IP:9092
 #   TOKEN_CHECK=true        # 想跳过登录鉴权先调接口时设 false
-# 服务注册问题备忘：后端在 Windows 上注册到 Nacos 的实例 IP 是你 Windows 的局域网 IP，
-# 所以 VM 和 Windows 必须双向可达（VMware NAT 通常宿主机→VM 通、VM→宿主机也通）。
-# 若服务之间调不通，给服务再加 SPRING_CLOUD_NACOS_DISCOVERY_IP=你的Windows IP。
+# 服务注册问题备忘（2026-10-15 实测）：后端跑在 Windows 上时，注册到 Nacos 的实例 IP
+# 是 192.168.150.1（VMware 那块虚拟网卡）。服务之间靠它互调是能通的，但它是 Spring
+# "自己挑网卡"挑出来的结果，想固定住就给每个服务加
+#   SPRING_CLOUD_NACOS_DISCOVERY_IP=你希望被访问到的 Windows IP
+# 另外 Windows 防火墙要放行 8101~8107 入站，否则 Feign 调用表现为连接超时。
 #
 # ---------------------------------------------------------------------------
 # 起来之后的验证清单（都在 Windows 上做，不用登 VM）：
@@ -139,7 +136,7 @@ services:
   # ==========================================================================
   mysql:
     image: mysql:8.0
-    container_name: fitness-mysql
+    container_name: mysql
     restart: unless-stopped          # VM 重启后自动拉起；手动 stop 的不会被重启拉起来
     mem_limit: 700m
     environment:
@@ -153,7 +150,7 @@ services:
       - --performance-schema=OFF                # 关性能模式采样，小内存机器上省 200M+
       - --innodb-buffer-pool-size=256M          # 默认 128M，测试环境够用，别调大
       - --max-connections=200                   # 默认 151；7 个服务 × Hikari 上限 10 = 70，
-                                                # 再留出你客户端工具的一堆连接，200 有余量
+      # 再留出你客户端工具的一堆连接，200 有余量
       - --skip-log-bin                          # 8.0 默认开 binlog，单机用不上，省磁盘
     ports:
       - "3306:3306"
@@ -184,7 +181,7 @@ services:
   # ==========================================================================
   redis:
     image: redis:7.4                 # VM 上是 7.4，没有裸的 redis:7
-    container_name: fitness-redis
+    container_name: redis
     restart: unless-stopped
     mem_limit: 300m
     command:
@@ -195,8 +192,8 @@ services:
       - 256mb
       - --maxmemory-policy
       - noeviction                   # ★ 别用 allkeys-lru：LRU 会把登录令牌白名单和幂等锁
-                                     #   当普通键淘汰掉，表现是"用着用着突然全掉线"。
-                                     #   noeviction 是写满就报错，宁可报错也不要静默失效。
+        #   当普通键淘汰掉，表现是"用着用着突然全掉线"。
+      #   noeviction 是写满就报错，宁可报错也不要静默失效。
       # 测试环境不设密码。要给 Redis 加密码的话，取消下面两行注释，
       # 同时后端要加 SPRING_DATA_REDIS_PASSWORD=xxx（yml 里目前只有 gateway/user 读了 REDIS_PASS）
       # - --requirepass
@@ -239,16 +236,22 @@ services:
     # 而且那时容器还没起来，所以报 No such container。查镜像用：
     #   docker run --rm --entrypoint sh rabbitmq:3.13-management -c 'ls /opt/rabbitmq/plugins'
     image: rabbitmq:3.13-management
-    container_name: fitness-rabbitmq
+    container_name: rabbitmq
     restart: unless-stopped
     mem_limit: 512m
     environment:
       # ★ 故意不用 guest 账号：RabbitMQ 默认禁止 guest 从"非本机"登录，
       #   而你的后端跑在 Windows 上，连 VM 的 5672 属于远程连接 → 会被直接拒。
-      #   这里建一个普通账号 fitness，后端 yml 里的默认值是 guest/guest，
-      #   所以 course/order/point/user 四个服务必须显式加 MQ_USER / MQ_PASS。
-      #   注意：这两个值只在"数据目录是空的"那次启动时生效（镜像的初始化脚本只跑一次）。
-      #   想改口令得连 rabbitmq-data 卷一起删：docker compose ... down -v 再 up -d。
+      #   后端各服务 yml 的 MQ_USER/MQ_PASS 默认值就是下面这两个，所以本机跑不用设任何环境变量。
+      # ⚠️ compose 的插值语法是 ${VAR:-默认}，<b>不是</b> Spring 的 ${VAR:默认}。
+      #   少一个连字符会让整个文件解析失败：invalid interpolation format for services.rabbitmq.environment.…
+      #   （报错里提示"用 $$ 转义 $"是另一回事：那是说值里本身带 $ 时才需要。）
+      # ⚠️ 这两个值<b>只在数据目录为空的首次启动生效</b>。已经起过一次之后改这里没用，
+      #   broker 里还是老账号，表现是后端一直 ACCESS_REFUSED。改口令用 rabbitmqctl，
+      #   别用 down -v（那个卷是 rabbitmq-data，但同文件的 mysql-data 会被一起删掉，库里数据清零）：
+      #     docker exec fitness-rabbitmq rabbitmqctl list_users                       # 看现在有谁
+      #     docker exec fitness-rabbitmq rabbitmqctl add_user    新账号 新口令
+      #     docker exec fitness-rabbitmq rabbitmqctl set_permissions -p / 新账号 ".*" ".*" ".*"
       RABBITMQ_DEFAULT_USER: ${MQ_USER:-fitness}
       RABBITMQ_DEFAULT_PASS: ${MQ_PASS:-fitness123}
       RABBITMQ_DEFAULT_VHOST: /                  # 后端没配 vhost，用的就是默认的 /
@@ -275,7 +278,7 @@ services:
   nacos:
     # 你 VM 上这个 tag 没有仓库前缀（本地 retag）。核对：docker images | grep nacos
     image: nacos-server:v2.4.3
-    container_name: fitness-nacos
+    container_name: nacos
     restart: unless-stopped
     mem_limit: 700m
     environment:
@@ -284,14 +287,14 @@ services:
       JVM_XMX: 512m                            #   不设的话镜像默认给 2g，小 VM 会被 OOM 打死
       JVM_XMN: 128m                            #   新生代；跟着 XMX 一起缩，别留默认 1g
       NACOS_AUTH_ENABLE: "false"               # 演示环境关鉴权（后端 yml 也没传用户名密码，
-                                               # 开了就是 403 user not found）
+      # 开了就是 403 user not found）
       PREFER_HOST_MODE: ip
       TZ: Asia/Shanghai
       # 只用注册中心 + 内嵌 Derby，不需要 MYSQL_SERVICE_* 那一串外接库参数。
       # 将来要接配置中心并持久化到 MySQL，再补 MODE=standalone + MYSQL_SERVICE_HOST 等。
     ports:
       - "8848:8848"                # HTTP + 控制台（2.4.x 控制台就在 8848 的 /nacos，
-                                   # 不是 Nacos 3.x 那个独立 8080，别按 3.x 开）
+      # 不是 Nacos 3.x 那个独立 8080，别按 3.x 开）
       - "9848:9848"                # ★ gRPC：SDK 2.x 走 8848+1000，漏了它注册/订阅全失败
       - "9849:9849"                # gRPC 集群通信端口 8848+1001，单机用不到，但客户端会探测
     volumes:
@@ -319,7 +322,7 @@ services:
     #   如果这镜像其实是 bitnami 系（要 KAFKA_CFG_XXX 前缀），表现是"容器起来了但
     #   KRaft/监听器配置没生效"。核对：docker logs fitness-kafka 2>&1 | head -30
     image: kafka:3.9.2
-    container_name: fitness-kafka
+    container_name: kafka
     restart: unless-stopped
     mem_limit: 768m
     ports:
@@ -328,7 +331,7 @@ services:
       # ★★ 本文件唯一必须改的参数：把 VM_IP 换成 VM 的真实局域网 IP（或同目录 .env 里给）★★
       #   自检：docker exec fitness-kafka hostname -i 之后，在 Windows 上
       #        telnet/ping 这个 IP 的 9092，不通就是这里没改对。
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://${VM_IP:-192.168.150.100}:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://${VM_IP:-192.168.150.105}:9092
       KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller   # KRaft：一个进程同时当 broker 和 controller
@@ -344,7 +347,7 @@ services:
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0     # 省掉消费组再均衡的 3 秒等待
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"       # 允许自动建 topic（behavior 服务不建 topic）
       KAFKA_NUM_PARTITIONS: 1                       # 自动建的就是 1 分区。埋点用 deviceId 做 key
-                                                    # 保证同设备有序，1 分区对测试环境正好
+      # 保证同设备有序，1 分区对测试环境正好
       TZ: Asia/Shanghai
       # 想手动建 3 分区的 topic（体验分区并行）：
       #   docker exec fitness-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server 127.0.0.1:9092 \
@@ -372,7 +375,7 @@ services:
   # 配置文件在同目录 nginx/nginx.conf，里面还有一个必改项（网关所在的 Windows IP）。
   nginx:
     image: nginx:1.27-alpine         # VM 上已有（与 ACR 的 1.28-alpine 是同一个镜像 ID）
-    container_name: fitness-nginx
+    container_name: nginx
     restart: unless-stopped
     mem_limit: 64m                   # Nginx 很轻，64M 足够
     ports:
