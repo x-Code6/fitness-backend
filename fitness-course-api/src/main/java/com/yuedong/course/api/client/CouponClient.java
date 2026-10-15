@@ -12,7 +12,7 @@ import java.math.BigDecimal;
 /**
  * 优惠券契约（课程服务承载优惠券域；订单服务下单用券时 Feign 调用）。
  */
-@FeignClient(name = "fitness-course")
+@FeignClient(name = "fitness-course", contextId = "couponClient")
 public interface CouponClient {
 
     /**

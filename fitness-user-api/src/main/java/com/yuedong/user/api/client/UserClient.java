@@ -19,7 +19,7 @@ import java.util.List;
  * <p>消费方引入本模块后，在启动类上声明
  * {@code @EnableFeignClients(basePackages = "com.yuedong.user.api")} 按需启用。</p>
  */
-@FeignClient(name = "fitness-user")
+@FeignClient(name = "fitness-user", contextId = "userClient")
 public interface UserClient {
 
     /**

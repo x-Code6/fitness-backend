@@ -25,7 +25,7 @@ import java.util.List;
  * <b>跨服务写操作少一处，能出问题的地方就少一处</b>——这正是"避免分布式事务"的落地方式：
  * 不是上 Seata，而是让这一步根本不需要跨服务写。</p>
  */
-@FeignClient(name = "fitness-course")
+@FeignClient(name = "fitness-course", contextId = "courseClient")
 public interface CourseClient {
 
     /**

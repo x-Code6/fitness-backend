@@ -17,7 +17,7 @@ import java.util.List;
  * 但"门店卡片显示 4.8 分"是课程域的展示需求 ——
  * 所以这里提供<b>只读的批量接口</b>，写留在订单域。</p>
  */
-@FeignClient(name = "fitness-order")
+@FeignClient(name = "fitness-order", contextId = "ratingClient")
 public interface RatingClient {
 
     /**
