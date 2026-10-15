@@ -17,7 +17,7 @@ import java.util.List;
 /**
  * 积分服务契约（管理端会员积分聚合 + 积分商城管理 Feign 调用）。
  */
-@FeignClient(name = "fitness-point")
+@FeignClient(name = "fitness-point", contextId = "pointClient")
 public interface PointClient {
 
     /** 会员积分简况批量查询（userIds 为逗号分隔的用户 id） */

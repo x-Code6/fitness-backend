@@ -34,7 +34,7 @@ import java.util.List;
  * 两层时间窗的<b>精细配置</b>由末尾的 {@code window/page} 与 {@code window/save} 负责（切片 L 已落地）；
  * {@code assign-store} 只建课程×门店关系并给一套默认窗口，避免"配了门店却没生效"。</p>
  */
-@FeignClient(name = "fitness-course")
+@FeignClient(name = "fitness-course", contextId = "courseAdminClient")
 public interface CourseAdminClient {
 
     // ---------- 课程 ----------

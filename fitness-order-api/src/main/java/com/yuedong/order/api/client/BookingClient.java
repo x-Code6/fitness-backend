@@ -20,12 +20,17 @@ import org.springframework.web.bind.annotation.RequestParam;
  * 它们随 {@code t_reservation} 一起回到下面的预约那一段里——但入口路径已经变了。
  * 留在订单上就是把三条状态机轴塞回一张表，那正是这次重构要拆开的东西。</p>
  *
- * <p>★<b>为什么凭证与预约的方法也挂在这个客户端上，不新建两个 Client 接口</b>：
- * 它们的 {@code name} 都是 "fitness-order"，Spring Cloud OpenFeign 默认按服务名注册客户端 Bean，
- * 同名两个接口会撞 Bean 名（要错开得给每个配 {@code contextId}）。
- * 一个服务一个管理端契约客户端，本来就是最省心的形状。</p>
+ * <p>★<b>为什么必须写 {@code contextId}（第一次真实启动就炸在这里）</b>：
+ * Feign 给每个客户端注册一个 {@code <name>.FeignClientSpecification} Bean，
+ * 键取的是 <b>name 而不是接口名</b>。本项目的契约模块里同一个服务有多个客户端
+ * （course 有 Course/CourseAdmin/Store/Coupon/Coach 五个，order 有 Booking/Rating 两个），
+ * 不配 contextId 就是"同一个 Bean 名注册两次" →
+ * 启动直接失败：{@code The bean 'fitness-course.FeignClientSpecification' could not be registered}。
+ * ⚠️ 报错提示的 {@code spring.main.allow-bean-definition-overriding=true} <b>不要用</b>：
+ * 它只是让后注册的覆盖先注册的，表面能起来了，实际剩一个客户端、另一批方法全不存在，
+ * 变成运行期才炸的更难的 bug。</p>
  */
-@FeignClient(name = "fitness-order")
+@FeignClient(name = "fitness-order", contextId = "bookingClient")
 public interface BookingClient {
 
     /** 管理端：订单分页 */
