@@ -10,7 +10,7 @@ import org.springframework.amqp.core.DirectExchange;
 import org.springframework.amqp.core.Queue;
 import org.springframework.amqp.core.QueueBuilder;
 import org.springframework.amqp.rabbit.connection.CorrelationData;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.boot.autoconfigure.amqp.RabbitTemplateCustomizer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -124,17 +124,30 @@ public class RabbitConfig {
 
     /**
      * 生产者确认回调：消息是否成功到达交换机（ack=false 时打错误日志，可扩展重发/落库补偿）。
+     *
+     * <p><b>为什么用 RabbitTemplateCustomizer，而不是自己声明一个 RabbitTemplate bean。</b>
+     * 原先的写法是 {@code @Bean RabbitTemplate confirmCallback(RabbitTemplate rabbitTemplate)}
+     * ——往方法参数里塞一个 RabbitTemplate、设置完回调再把它原样 return 出去，看着像"装饰一下"，
+     * 实际等于<b>由我们自己定义了一个 RabbitTemplate bean</b>。两个后果连在一起：
+     * <ol>
+     *   <li>Boot 自动配置的那个 RabbitTemplate 上标了 {@code @ConditionalOnMissingBean}，
+     *       一见我们已经有同类型的 bean 就退出，于是容器里"唯一的 RabbitTemplate"变成了这个方法本身；</li>
+     *   <li>它的入参又要注入 RabbitTemplate，注入的只能是它自己 →
+     *       任何用到 RabbitTemplate 的 bean 都会被拖进环，启动即失败，
+     *       报的就是 {@code bookingController -> bookingServiceImpl -> confirmCallback} 这条循环链。</li>
+     * </ol>
+     * 现在的写法不新增 RabbitTemplate，只交出一个"装回调"的动作：Boot 在<b>创建</b>
+     * 自动配置那个 RabbitTemplate 时会把所有 RabbitTemplateCustomizer 依次 apply 上去
+     * （见 {@code RabbitAutoConfiguration.RabbitTemplateConfiguration#rabbitTemplate}），
+     * 依赖图里没有回头边，publisher-confirm-type 这类 yml 配置也照常生效。</p>
      */
-    @Configuration
-    static class ConfirmCallbackConfig {
-        @Bean
-        public RabbitTemplate confirmCallback(RabbitTemplate rabbitTemplate) {
-            rabbitTemplate.setConfirmCallback((CorrelationData cd, boolean ack, String cause) -> {
-                if (!ack) {
-                    log.error("MQ 消息未到达交换机: cause={}, correlation={}", cause, cd);
-                }
-            });
-            return rabbitTemplate;
-        }
+    @Bean
+    public RabbitTemplateCustomizer confirmCallbackCustomizer() {
+        return rabbitTemplate -> rabbitTemplate.setConfirmCallback(
+                (CorrelationData correlationData, boolean ack, String cause) -> {
+                    if (!ack) {
+                        log.error("MQ 消息未到达交换机: cause={}, correlation={}", cause, correlationData);
+                    }
+                });
     }
 }
