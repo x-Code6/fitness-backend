@@ -10,7 +10,7 @@
 # 这个文件装的是"环境"：中间件 MySQL / Redis / RabbitMQ / Nacos / Kafka，加一个接入层 Nginx。
 # 7 个业务服务（gateway 8080 + user/course/order/point/behavior/admin）仍在 Windows
 # 的 IDEA 里跑 —— 现在还没有业务镜像，也没有 Dockerfile，属于后面单独一期再做。
-# 六个容器之间互不依赖，所以不写 depends_on。
+# 七个容器之间互不依赖，所以不写 depends_on。
 #
 # ---------------------------------------------------------------------------
 # ★ 必改参数一共两处：
@@ -69,7 +69,9 @@
 #   nacos  700m   （堆显式压到 512m；之前实测不设时是 1g，小 VM 上就是它先撑爆的）
 #   kafka  768m   （堆 512m）
 #   nginx   64m   （很轻）
-#   合计 ≈ 3.1G，剩下 2.9G 给 Docker 自身、内核和文件缓存。
+#   mongo  800m  （★WiredTiger 缓存必须用 --wiredTigerCacheSizeGB 显式压到 0.5G，
+#             否则它按"物理内存-1G"的一半去算，在这台 VM 上会把容器撑到被 OOM Kill）
+#   合计 ≈ 3.9G，剩下 ≈ 2.1G 给 Docker 自身、内核和文件缓存。
 #   ⚠️ 别把 VM 开到 8G：宿主机 Windows 本来就只剩一点空闲，VM 越大越卡。
 #
 # ---------------------------------------------------------------------------
@@ -97,7 +99,7 @@
 #
 # ---------------------------------------------------------------------------
 # 起来之后的验证清单（都在 Windows 上做，不用登 VM）：
-#   1. docker compose ... ps                五个中间件是 Up (healthy)，
+#   1. docker compose ... ps                七个容器是 Up (healthy)，
 #      Nginx 没配健康检查（它很轻，直接按第 7 步访问验证更靠谱），显示 Up 就行
 #   2. http://VM_IP:8848/nacos              服务列表；先空着正常，后端启动后才有实例
 #   3. http://VM_IP:15672                   用 fitness/fitness123 登录；
@@ -407,6 +409,48 @@ services:
       start_period: 40s
     networks: [fitness-net]
 
+  # ==========================================================================
+  # 6) MongoDB 7 —— 只存一件事：每日身体记录（库 yd_profile，集合 body_record）
+  # ==========================================================================
+  mongo:
+    # ⚠️⚠️ 这台 VM 拉不到 Docker Hub，镜像名必须是 docker images 里实有的 tag
+    #      （和 Nacos/Kafka 那次一样的坑）。开机后先确认：
+    #        docker images | grep -i mongo
+    #      没有就把官方 mongo:7.0 推到你自己的 ACR 再改成那个全名前缀。
+    #      名字写错的表象是"mongo 服务起不来、user 服务连不上"，
+    #      而 user 服务报的是 MongoCommandException / Connection refused，很容易往配置上想。
+    image: mongo:7.0
+    container_name: mongo
+    restart: unless-stopped
+    # ★必须限内存，而且必须同时限 WiredTiger 缓存。
+    #   MongoDB 默认把"物理内存-1GB 的一半"当缓存，在这台 7.6G 的 VM 上算出来是 3G 上下，
+    #   而 compose 的 mem_limit 只会在超限时 OOM Kill 它 → 表现是容器反复重启而不是"变慢"。
+    #   所以两个数要配套：缓存 0.5G + 容器 800m（缓存之外还有连接与日志开销，留 300m 余量）。
+    mem_limit: 800m
+    command: ["--wiredTigerCacheSizeGB", "0.5"]
+    environment:
+      TZ: Asia/Shanghai
+      # ★一期不设账号：单机测试环境，鉴权要同时在容器里建用户、在后端 yml 里配口令，
+      #   两边漏一个就是 "command denied" 而不是"连不上"，排查成本偏高。
+      #   真要加就把 MONGO_INITDB_ROOT_USERNAME / _PASSWORD 和后端 uri 一起改。
+      MONGO_INITDB_ROOT_USERNAME: ""
+      MONGO_INITDB_ROOT_PASSWORD: ""
+    ports:
+      - "27017:27017"                # 后端 yml 的 spring.data.mongodb.host 就填这台 VM 的 IP
+    volumes:
+      # 命名卷，别用匿名卷：kafka 那次教训就是匿名卷重建容器等于数据清零，
+      # 而身体数据是用户资产，删了就没了（它也不设 TTL，和埋点正好相反）。
+      - mongo-data:/data/db
+    healthcheck:
+      # mongosh 是 6.0+ 镜像自带的 shell。--quiet 关掉横幅，eval 里跑一条 ping。
+      # ★不要用 curl 探 27017：Mongo 不是 HTTP，端口通不代表能认证。
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    networks: [fitness-net]
+
   # 前端统一入口：浏览器/小程序 → Nginx(VM:80) → 网关(8080) → 业务服务
   # 配置文件在同目录 nginx/nginx.conf，里面还有一个必改项（网关所在的 Windows IP）。
   nginx:
@@ -437,6 +481,7 @@ volumes:
   rabbitmq-data:
   nacos-data:
   nacos-logs:
+  mongo-data:
 
 networks:
   fitness-net:

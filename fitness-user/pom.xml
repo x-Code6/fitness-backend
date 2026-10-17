@@ -57,6 +57,19 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-redis</artifactId>
         </dependency>
+        <!-- MongoDB：存"每日身体记录"。
+             ★为什么这条数据放 Mongo 而不是 MySQL（面试会被问，答不出来就别加）：
+             1) 指标是"可缺省"的——有人只填体重，有人连体脂、围度、睡眠一起填。
+                MySQL 要么留一堆 NULL 列，要么每次加指标改表；文档就是"有就写、没有就没这个字段"。
+             2) 它的读法永远是"取某个人的一段时间序列"，不做跨人 JOIN，
+                关系型的强项（连表、外键、聚合统计）这里一条都用不上。
+             3) 它不参与任何业务判定（体脂再高也不会让下单失败），
+                所以放在事务与唯一索引之外，代价最低。
+             ★反过来，账号、订单、凭证、预约、打卡这些"错了要赔钱"的，一律留在 MySQL。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-mongodb</artifactId>
+        </dependency>
         <dependency>
             <groupId>com.yuedong</groupId>
             <artifactId>fitness-common</artifactId>

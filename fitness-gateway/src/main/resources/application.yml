@@ -39,7 +39,9 @@ spring:
           uri: lb://fitness-user
           predicates:
             # message 是站内消息中心，接口在 user 服务里，以前漏了这条路由导致前端 404
-            - Path=/api/auth/**,/api/user/**,/api/message/**
+            # body 是身体数据（记录存 MongoDB）与健身档案（存 MySQL），同属"人"的语义所以也在 user 服务。
+            # ★整族都要登录，所以一条都不加进白名单：身体数据是全项目最敏感的一块。
+            - Path=/api/auth/**,/api/user/**,/api/message/**,/api/body/**
           filters:
             - StripPrefix=1
 
