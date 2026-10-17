@@ -58,6 +58,29 @@ CREATE TABLE IF NOT EXISTS t_message (
     KEY idx_user_read (user_id, is_read, created_at)
 ) ENGINE = InnoDB COMMENT '站内消息表';
 
+-- ----------------------------------------------------------------
+-- 健身档案（2026-10-17 新增）
+-- ★为什么这张表在 MySQL 而"每日身体记录"在 MongoDB：
+--   档案是"一人一份、字段有界、要跨人统计"（管理端按目标筛会员），
+--   身体记录是"一人一天一条、字段可缺、只按人取一段"。
+--   同一个功能里两种存储并存是刻意的——各自放在自己擅长的地方，而不是全塞一个库里。
+-- ★主键用 user_id 而不是自增 id：一人一行，user_id 天然唯一，
+--   省掉 uk_user_id 这条索引，insert 撞主键就是"已有档案"，重复建档从根上不可能。
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS t_user_profile (
+    user_id       BIGINT       NOT NULL              COMMENT '就是 t_user.id，一人一行',
+    goal          VARCHAR(20)  NULL                  COMMENT 'LOSE_FAT 减脂 / BUILD_MUSCLE 增肌 / KEEP_FIT 保持 / STRENGTH 力量。存枚举名不存数字',
+    experience    VARCHAR(20)  NULL                  COMMENT 'NEWBIE / UNDER_1Y / OVER_1Y',
+    height_cm     DECIMAL(5,1) NULL                  COMMENT '身高。★存它而不是存 BMI：BMI 是派生值，身高或体重一变它就错了，能算出来的不要落库',
+    target_weight DECIMAL(5,1) NULL                  COMMENT '目标体重。★只存这里，绝不复制进每条身体记录——否则改一次目标要刷全部历史',
+    injuries      VARCHAR(200) NULL                  COMMENT '伤病史，自由文本。不做结构化：结构化会诱导去建一张没人维护的动作/部位字典表',
+    prefer_slots  JSON         NULL                  COMMENT '偏好时段数组，如 ["WORKDAY_EVENING","WEEKEND_MORNING"]',
+    track_metrics JSON         NULL                  COMMENT '该用户在跟踪哪些指标。★这是"让用户自定义字段"的替代品：他从固定全集里勾选，而不是发明字段——元数据表+动态表单+动态校验的代价远大于收益，且一上自定义，跨人统计立刻散架',
+    created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id)
+) ENGINE = InnoDB COMMENT '健身档案表';
+
 -- ============================================================
 -- 种子数据说明
 -- ============================================================

@@ -25,6 +25,20 @@ spring:
       port: ${REDIS_PORT:6379}
       password: ${REDIS_PASS:}
       timeout: 2000ms
+    # MongoDB：只存"每日身体记录"（body_record 集合）。
+    # ★分开写 host/port/database 而不是拼一条 uri：和上面 Redis 的写法保持一致，
+    #   换环境时只用改同名环境变量（MONGO_HOST），不用去动一串 URI 字符串。
+    mongodb:
+      host: ${MONGO_HOST:192.168.150.105}
+      port: ${MONGO_PORT:27017}
+      database: ${MONGO_DB:yd_profile}
+      # ★这个键是坑：Spring Data MongoDB 默认<b>不会</b>根据实体上的 @Indexed /
+      #   @CompoundIndex 注解去建索引，注解写了也等于没写，唯一约束不生效。
+      #   打开它之后，应用启动时会把实体上的索引声明同步到集合上（幂等，已存在就跳过）。
+      #   代价是启动多几百毫秒；生产上更规范的做法是用脚本预先建好，本项目用注解图个直观。
+      auto-index-creation: true
+      # 一期不设账号：单机测试环境，且 MongoDB 默认不开鉴权。
+      # 真要加就把 username/password 补上，同时在容器里初始化用户，两边必须一起改。
   cloud:
     nacos:
       discovery:
