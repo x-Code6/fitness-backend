@@ -233,6 +233,28 @@ public final class RedisKeyConstants {
         return IDEMPOTENT_API + prefix + ":" + userId + ":" + path;
     }
 
+    /**
+     * 下单令牌（一次性）。进入下单页时由 {@code /booking/preview} 发号写入，
+     * 提交时由 {@code /booking/create} 用 {@code getAndDelete} 原子取回并删除。
+     *
+     * <p>★<b>一条令牌一个 key，不是一个用户一个 Set。</b>
+     * Redis 的过期时间只能设在 key 上、不能设在集合的单个成员上，
+     * 用 Set 存"这个用户手里的订单号"的话，用户每打开一次下单页就永久多一个成员，
+     * 关掉页面也不会消失——集合会随时间无限增长，而且拿不到"10 分钟自动失效"这个语义。
+     * 一条一个 key，TTL 天然就是"未提交的令牌自动回收"，不需要任何清理任务。</p>
+     *
+     * <p>★key 里带 userId 是必须的：不带的话，任何人拿到别人的订单号就能替别人提交、
+     * 或者纯粹把那枚令牌用掉（拒绝服务）。带上之后别人的号在我的 key 空间里根本不存在。</p>
+     *
+     * <p>value 存发号时的毫秒时间戳。它不参与业务判断，只是排查用的抓手——
+     * 用户投诉"点了没反应"时，能看出这枚令牌是刚发的还是 9 分钟前发的。</p>
+     */
+    public static final String ORDER_CREATE_TOKEN = "order:create:token:";
+
+    public static String orderCreateToken(Long userId, String orderNo) {
+        return ORDER_CREATE_TOKEN + userId + ":" + orderNo;
+    }
+
     public static String adminCaptcha(String captchaId) {
         return ADMIN_CAPTCHA + captchaId;
     }

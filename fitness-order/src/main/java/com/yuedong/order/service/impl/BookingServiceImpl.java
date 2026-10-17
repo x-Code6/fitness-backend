@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yuedong.common.constant.MqConstants;
 import com.yuedong.common.exception.BusinessException;
 import com.yuedong.common.model.PageDTO;
+import com.yuedong.common.constant.RedisKeyConstants;
 import com.yuedong.common.result.ErrorCode;
 import com.yuedong.common.result.Result;
 import com.yuedong.course.api.client.CouponClient;
@@ -43,10 +44,12 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.core.MessageDeliveryMode;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -102,6 +105,13 @@ public class BookingServiceImpl implements BookingService {
      */
     private final BookingTxWriter bookingTxWriter;
     /**
+     * Redis：只用来存下单令牌（一次性，10 分钟）。
+     * <p>★它不是"缓存"，是<b>正确性依赖</b>：Redis 挂了发不出令牌、下不了单。
+     * 本项目接受这个耦合——登录令牌、秒杀库存、幂等窗口本来就都在 Redis 上，
+     * 它挂了就整体不可用，不会只有下单这一条链路悄悄降级。</p>
+     */
+    private final StringRedisTemplate redis;
+    /**
      * 预约服务。<b>只用于管理端详情</b>把三条轴拼在一起。
      * <p>★不会形成循环依赖：ReservationServiceImpl 依赖的是凭证服务与 mapper，
      * 不回头依赖订单服务。如果哪天预约里要读订单服务的逻辑，
@@ -114,6 +124,21 @@ public class BookingServiceImpl implements BookingService {
     // =====================================================================
     @Override
     public BookingVO create(Long userId, BookingCreateDTO dto) {
+
+        // ===== 第 0 步：原子消费下单令牌（必须排在所有业务动作之前）=====
+        // getAndDelete 就是一条 Redis 命令（GETDEL）：取值 + 删除不可分割，
+        // 所以两个并发请求里只有一个能拿到东西，另一个拿到 null。
+        // ★不能写成 exists→get→delete 三步，那样两个请求会同时看到"有"，令牌就白发了。
+        // ★这一步放在算价前面：否则两个重复请求都会先跑完"查课程 + 判券"两次跨服务调用
+        //   才在令牌上分出胜负，白烧一轮资源，而且窗口更长、更容易两个都跑到底。
+        String tokenKey = RedisKeyConstants.orderCreateToken(userId, dto.getOrderNo());
+        String issuedAt = redis.opsForValue().getAndDelete(tokenKey);
+        if (issuedAt == null) {
+            // 三种情况都会走到这里：① 同一个号提交第二次（手抖/前端重发）
+            // ② 令牌超过 10 分钟没提交，已经自己过期 ③ 号不是这个用户的（别人的、或乱造的）
+            log.warn("下单令牌无效: userId={}, orderNo={}", userId, dto.getOrderNo());
+            throw new BusinessException(ErrorCode.ORDER_TOKEN_INVALID);
+        }
 
         // ===== 第 1 步：算价（★和 /booking/preview 调的是同一个方法）=====
         // 课程快照、可售判定、份数上限、券可用性、四个金额全部由 quote 一次给全。
@@ -134,7 +159,9 @@ public class BookingServiceImpl implements BookingService {
 
         // ===== 第 2 步：组装订单（金额和快照一律来自 quote，绝不回读前端传的值）=====
         Booking booking = new Booking();
-        booking.setOrderNo(genOrderNo());
+        // ★用 preview 时就发给前端的那个号，不再在这里现生成：
+        //   号在 Redis 里已经和这个用户绑过一次了，复用它才能让"一次性"这件事成立。
+        booking.setOrderNo(dto.getOrderNo());
         booking.setUserId(userId);
         booking.setCourseId(course.getId());
         booking.setCourseKind(course.getCourseKind());
@@ -206,7 +233,19 @@ public class BookingServiceImpl implements BookingService {
                     .build());
         }
 
+        // ===== 第 3 步：算完价一切正常，才发这一枚下单令牌 =====
+        // ★顺序有意义：可售校验、份数上限、算价都在前面，
+        //   这样"给一门根本买不了的课发号"这种事不会发生，Redis 里也不会堆废令牌。
+        // ★每次 preview 都发新号（不发同一个号第二次）：用户改份数、换券都拿到新号，
+        //   旧号让它自己 10 分钟过期。不做"重复 preview 复用同一个号"那种优化——
+        //   复用就要引入"号已经用掉了还能再发"的状态，一次性这件事就不干净了。
+        String orderNo = genOrderNo();
+        redis.opsForValue().set(RedisKeyConstants.orderCreateToken(userId, orderNo),
+                String.valueOf(System.currentTimeMillis()),
+                Duration.ofMinutes(OrderConstants.ORDER_TOKEN_EXPIRE_MINUTES));
+
         return BookingPreviewVO.builder()
+                .orderNo(orderNo)
                 .courseId(course.getId())
                 .courseName(course.getName())
                 .storeId(course.getStoreId())
