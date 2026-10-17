@@ -64,6 +64,9 @@ public enum ErrorCode {
     SLOT_NOT_BOOKABLE(43010, "该时段不可预约，请刷新后重新选择"),
     SLOT_ALREADY_TAKEN(43011, "该时段刚刚被预约，请刷新后重试"),
     SLOT_TIME_INVALID(43012, "上课时间不合法（须整点且在营业与教练可约区间内）"),
+    // 43013~43015 原为购物车（CART_*），2026-10-17 随 D12 撤项删空。
+    // 43013 这里重新启用给下单令牌，编号不空转；43014/43015 留空，避免和旧文档对不上。
+    ORDER_TOKEN_INVALID(43013, "页面已过期或已提交过，请刷新后再试"),
     // 评价（t_rating）
     RATING_ORDER_UNQUALIFIED(43016, "该订单还不能评价（未支付或还有凭证未使用完）"),
     RATING_DUPLICATE(43017, "本单已评价过，如需修改请联系客服"),

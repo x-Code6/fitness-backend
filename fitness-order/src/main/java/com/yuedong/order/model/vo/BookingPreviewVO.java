@@ -23,6 +23,17 @@ public class BookingPreviewVO {
 
     // ---------- 买的是什么（快照，够页面渲染，不让前端再查一次课程详情）----------
 
+    /**
+     * <b>预分配订单号，同时就是这次下单的令牌。</b>
+     * <p>★前端必须存下它、并在 {@code POST /booking/create} 里<b>原样带回</b>。
+     * 服务端已在 Redis 记下落这个号的那枚令牌（10 分钟有效），
+     * 提交时原子取回并删除——取不到就是重复提交或已过期。
+     * 所以同一枚令牌只能换来一张订单，用户连点、前端超时重发都只生效一次。</p>
+     * <p>★用户改了份数或换了券，只是重新拉一次 preview、<b>拿到一个新号</b>，
+     * 用最新那个去提交即可；旧号会自己过期，不需要前端做任何清理。</p>
+     */
+    private String orderNo;
+
     private Long courseId;
 
     private String courseName;
