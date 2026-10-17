@@ -5,6 +5,7 @@ import com.yuedong.order.api.dto.BookingDTO;
 import com.yuedong.order.api.dto.OrderAdminDetailDTO;
 import com.yuedong.order.model.dto.BookingCreateDTO;
 import com.yuedong.order.model.vo.BookingDetailVO;
+import com.yuedong.order.model.vo.BookingPreviewVO;
 import com.yuedong.order.model.vo.BookingVO;
 
 import java.util.List;
@@ -32,14 +33,21 @@ public interface BookingService {
     BookingVO create(Long userId, BookingCreateDTO dto);
 
     /**
-     * 建单并归入一个组号（<b>只给购物车结算用</b>）。
+     * 下单页试算：算出金额，并给出这个份数下用户手里哪些券可用。<b>只读，不写库、不核销券。</b>
      *
-     * <p>★为什么不把 {@code parentNo} 放进 {@link BookingCreateDTO} 让前端传：
-     * 组号是"这次结算"的产物，不是用户的输入。让它出现在对外入参里，
-     * 就等于允许客户端把一张新单挂到任意旧组上去——整组支付会连着一张他没打算付的单一起流转。
-     * <b>服务端生成的标识不出现在入参 DTO 里，这是一条该守的边界。</b></p>
+     * <p>★用户每改一次份数、每换一张券都会打这一个接口。之所以不放过前端自己算：
+     * "这张券能不能用"有五个条件（金额门槛、券的使用时间窗口、课程白名单、门店白名单、
+     * 已使用状态），这些规则只允许在课程服务里有一份。前端复制一份的结果一定是
+     * "列表里显示可用、点提交报错 COUPON_NOT_USABLE"。</p>
+     *
+     * <p>★金额与 {@code create} 用的是同一个算价方法
+     * （{@link BookingPriceCalculator}），所以用户在页面上看到的实付价
+     * 和最终建单的成交价不会是两个数。</p>
+     *
+     * @param quantity       份数，null 按 1；超过上限直接报错（不静默截断）
+     * @param couponRecordId 选中的券，null = 不用券
      */
-    BookingVO create(Long userId, BookingCreateDTO dto, String parentNo);
+    BookingPreviewVO preview(Long userId, Long courseId, Long storeId, Integer quantity, Long couponRecordId);
 
     /**
      * 我的订单列表。
@@ -58,15 +66,13 @@ public interface BookingService {
     /**
      * 模拟支付：CAS 流转 UNPAID → PAID，并<b>在同一事务里出票</b>。
      *
-     * <p>★{@code orderNo} 与 {@code parentNo} 至少传一个（前端二选一发的）：
-     * 传 parentNo 时同组订单一次付清并逐单出票。
-     * 用一条 {@code UPDATE ... WHERE parent_no=?} 而不是循环调单笔支付，
-     * 是为了避免"付了 3 张里的 2 张"。</p>
+     * <p>★"同事务"是本方法的全部并发方案：订单状态与凭证同在 yd_order 一个库，
+     * 一次提交要么都成、要么都不成，不会出现"钱扣了没票"或"有票没扣钱"。</p>
      */
-    void pay(Long userId, String orderNo, String parentNo);
+    void pay(Long userId, String orderNo);
 
-    /** 主动取消：只有未支付可取消；传 parentNo 时整组取消 */
-    void cancel(Long userId, String orderNo, String parentNo);
+    /** 主动取消：只有未支付可取消 */
+    void cancel(Long userId, String orderNo);
 
     // =====================================================================
     // 管理端（fitness-admin-server 经 Feign 调用）

@@ -29,11 +29,15 @@ import com.yuedong.order.model.entity.Booking;
 import com.yuedong.order.model.entity.Entitlement;
 import com.yuedong.order.model.entity.Reservation;
 import com.yuedong.order.model.vo.BookingDetailVO;
+import com.yuedong.order.model.vo.BookingPreviewVO;
+import com.yuedong.order.model.vo.CouponOptionVO;
 import com.yuedong.order.model.vo.BookingVO;
 import com.yuedong.order.model.vo.EntitlementVO;
 import com.yuedong.order.mq.NotifyPublisher;
 import com.yuedong.order.mq.message.OrderTimeoutMessage;
+import com.yuedong.order.service.BookingPriceCalculator;
 import com.yuedong.order.service.BookingService;
+import com.yuedong.order.service.BookingTxWriter;
 import com.yuedong.order.service.EntitlementService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -87,6 +91,17 @@ public class BookingServiceImpl implements BookingService {
     private final EntitlementService entitlementService;
     private final com.yuedong.order.service.RatingService ratingService;
     /**
+     * 算价。★建单和试算必须走它，见 {@link BookingPriceCalculator} 的类注释——
+     * 两个入口各算一遍是"页面显示 100、成交按 90"这类怪事的源头。
+     */
+    private final BookingPriceCalculator priceCalculator;
+    /**
+     * 建单的事务段（写订单 + 核销券）。
+     * <p>★放在单独的 bean 里是因为 Spring 事务靠代理生效，
+     * 同类里 {@code this.} 自调用不走代理，注解等于白写。</p>
+     */
+    private final BookingTxWriter bookingTxWriter;
+    /**
      * 预约服务。<b>只用于管理端详情</b>把三条轴拼在一起。
      * <p>★不会形成循环依赖：ReservationServiceImpl 依赖的是凭证服务与 mapper，
      * 不回头依赖订单服务。如果哪天预约里要读订单服务的逻辑，
@@ -99,61 +114,27 @@ public class BookingServiceImpl implements BookingService {
     // =====================================================================
     @Override
     public BookingVO create(Long userId, BookingCreateDTO dto) {
-        // 单买：不属于任何组
-        return create(userId, dto, null);
-    }
 
-    @Override
-    public BookingVO create(Long userId, BookingCreateDTO dto, String parentNo) {
-        // ===== 第 1 步：查课程快照（Feign 只读，不写远端任何东西）=====
-        // 一次调用同时拿到课程字段、门店名与该店的可售状态，避免"查课程 + 再查门店"两次 RPC
-        Result<CourseDTO> detailResult = courseClient.detail(dto.getCourseId(), dto.getStoreId());
-        if (detailResult.getCode() != 0 || detailResult.getData() == null) {
-            throw new BusinessException(ErrorCode.COURSE_NOT_FOUND);
-        }
-        CourseDTO course = detailResult.getData();
+        // ===== 第 1 步：算价（★和 /booking/preview 调的是同一个方法）=====
+        // 课程快照、可售判定、份数上限、券可用性、四个金额全部由 quote 一次给全。
+        // 这里 withCouponList 传 false：券已经定了，不必再拉一整份券列表浪费一次跨服务调用。
+        BookingPriceCalculator.Quote quote = priceCalculator.quote(
+                userId, dto.getCourseId(), dto.getStoreId(), dto.getQuantity(),
+                dto.getCouponRecordId(), false);
+        CourseDTO course = quote.getCourse();
 
-        // ===== 第 2 步：形态与可售校验 =====
-        // 展示型课程（CONTENT）没有"购买"这个动作；而"课程存在"不等于"能卖"——
-        // 不在可售窗口内同样要拒绝，否则用户会买到一张用不了的课
-        if (!"SALE".equals(course.getCourseKind())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "该课程为展示内容，无需购买");
-        }
-        if (!Boolean.TRUE.equals(course.getOnSale())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "该课程当前不可购买（未开售或已停售）");
+        // 券不可用要在建单这里才拦。同一个"不可用"在两个入口的语义不同：
+        // preview 时它是给用户看的一句说明（"还差 50 元可用"），
+        // create 时它是不能继续的理由
+        if (dto.getCouponRecordId() != null && !quote.isCouponUsable()) {
+            String reason = quote.getCouponReason() == null
+                    ? ErrorCode.COUPON_NOT_USABLE.getMessage() : quote.getCouponReason();
+            throw new BusinessException(ErrorCode.COUPON_NOT_USABLE, reason);
         }
 
-        // ===== 第 3 步：算价（用券时先校验可用性，此时还不动券）=====
-        // 份数由前端传（1 份 = 1 张凭证）。★上限在凭证服务里统一判，这里只兜住非法值：
-        // 负数与 0 都按 1 处理，而不是报错——"买一份"是唯一合理的退路
-        int quantity = dto.getQuantity() == null || dto.getQuantity() < 1
-                ? 1 : Math.min(dto.getQuantity(), OrderConstants.MAX_QUANTITY_PER_ITEM);
-        BigDecimal originalAmount = course.getPrice().multiply(BigDecimal.valueOf(quantity));
-        BigDecimal discountAmount = BigDecimal.ZERO;
-        String couponTitle = null;
-        if (dto.getCouponRecordId() != null) {
-            // ★v2 用券校验要带上"买哪门课、在哪家店"：券的可用范围是 券 × 订单 的关系，
-            // 只给金额判不出 scope=1/2，一张限高新店的券就能用在大学城店的订单上
-            Result<CouponUsableDTO> couponResult = couponClient.info(
-                    dto.getCouponRecordId(), userId, originalAmount, dto.getCourseId(), dto.getStoreId());
-            CouponUsableDTO coupon = couponResult.getData();
-            if (couponResult.getCode() != 0 || coupon == null || !coupon.isUsable()) {
-                // 把券服务给的具体原因带回前端（未达门槛 / 已过期 / 不在适用课程内）。
-                // 只说"优惠券不可用"用户无从下手
-                String reason = coupon == null ? ErrorCode.COUPON_NOT_USABLE.getMessage() : coupon.getReason();
-                throw new BusinessException(ErrorCode.COUPON_NOT_USABLE, reason);
-            }
-            couponTitle = coupon.getTitle();
-            discountAmount = coupon.getDiscount();
-        }
-        // 实付不能为负：满 100 减 120 这类配置错误的券，宁可少收也不能倒找钱
-        BigDecimal payAmount = originalAmount.subtract(discountAmount).max(BigDecimal.ZERO);
-
-        // ===== 第 4 步：建单（一次本地 insert，无跨服务写，所以没有 try/补偿）=====
+        // ===== 第 2 步：组装订单（金额和快照一律来自 quote，绝不回读前端传的值）=====
         Booking booking = new Booking();
         booking.setOrderNo(genOrderNo());
-        // 组号只在购物车结算时有值（由 CartServiceImpl 传入，不来自请求体）
-        booking.setParentNo(parentNo);
         booking.setUserId(userId);
         booking.setCourseId(course.getId());
         booking.setCourseKind(course.getCourseKind());
@@ -164,47 +145,117 @@ public class BookingServiceImpl implements BookingService {
         booking.setStoreName(course.getStoreName() == null ? "门店未配置" : course.getStoreName());
         booking.setLessonHours(course.getLessonHours());
         booking.setSaleType(course.getSaleType());
-        // TIMES：一单给几次 = 课程的 times_per_buy（管理员配课时定的，★不是固定 1；
-        // 种子数据里"私教·增肌入门"就是买一单给 2 次）。UNLIMITED 存 null 表示不限次
-        booking.setTimesGranted("UNLIMITED".equals(course.getSaleType()) ? null
-                : (course.getTimesPerBuy() == null || course.getTimesPerBuy() < 1 ? 1 : course.getTimesPerBuy()));
-        booking.setQuantity(quantity);
-        booking.setOriginalAmount(originalAmount);
-        booking.setDiscountAmount(discountAmount);
-        booking.setPayAmount(payAmount);
-        booking.setCouponRecordId(dto.getCouponRecordId());
-        booking.setCouponTitle(couponTitle);
+        booking.setTimesGranted(quote.getTimesGranted());
+        booking.setQuantity(quote.getQuantity());
+        booking.setOriginalAmount(quote.getOriginalAmount());
+        booking.setDiscountAmount(quote.getDiscountAmount());
+        booking.setPayAmount(quote.getPayAmount());
+        booking.setCouponRecordId(quote.getCouponRecordId());
+        booking.setCouponTitle(quote.getCouponTitle());
         booking.setStatus(BookingStatus.UNPAID);
         booking.setRefunded(0);
         booking.setCreatedAt(LocalDateTime.now());
-        bookingMapper.insert(booking);
 
-        // ===== 第 5 步：核销优惠券（全流程唯一一处跨服务写）=====
-        // 失败直接抛异常，本地订单随之回滚，没有远端名额需要释放。
-        // ⚠️ 残留缺口要说清：若"核销请求其实成功了但响应丢失"，会出现券已用而订单不存在。
-        //   真实项目要靠 outbox 表或对账任务修；本项目不引入那套机制，但必须能答出这里的风险。
-        if (dto.getCouponRecordId() != null) {
-            Result<Boolean> useResult = couponClient.use(dto.getCouponRecordId(), userId, booking.getOrderNo());
-            if (useResult.getCode() != 0 || !Boolean.TRUE.equals(useResult.getData())) {
-                log.error("优惠券核销失败，下单终止: userId={}, recordId={}, orderNo={}",
-                        userId, dto.getCouponRecordId(), booking.getOrderNo());
-                throw new BusinessException(ErrorCode.COUPON_NOT_USABLE, "优惠券核销失败，请重试");
-            }
-        }
+        // ===== 第 3 步：落库 + 核销券，一个事务 =====
+        // ★单独走 BookingTxWriter 这个 bean：同类自调用不走代理，事务注解会失效。
+        //   券核销失败时这条 insert 一起回滚，库里不会留下"引用未核销券"的孤儿单。
+        bookingTxWriter.write(booking, userId, dto.getCouponRecordId());
 
-        // ===== 第 6 步：15 分钟未支付自动取消的延迟消息 =====
+        // ===== 第 4 步：事务已经提交，才发不可撤回的两件事 =====
+        // 15 分钟未支付自动取消的延迟消息
         sendTimeoutMessage(booking.getOrderNo(), userId);
 
-        // ===== 第 7 步：站内通知 =====
+        // 站内通知
         notifyPublisher.publishBookingNotify(userId, "订单创建成功",
-                "已为你生成「" + course.getName() + "」订单，实付 ¥" + payAmount
-                        + (couponTitle == null ? "" : "（已用" + couponTitle + "）")
+                "已为你生成「" + course.getName() + "」订单，实付 ¥" + quote.getPayAmount()
+                        + (quote.getCouponTitle() == null ? "" : "（已用" + quote.getCouponTitle() + "）")
                         + "，请在 " + UNPAID_TIMEOUT_MINUTES + " 分钟内完成支付，超时将自动取消。");
 
         log.info("购买订单已创建: orderNo={}, userId={}, courseId={}, storeId={}, 份数={}, payAmount={}",
-                booking.getOrderNo(), userId, course.getId(), course.getStoreId(), quantity, payAmount);
+                booking.getOrderNo(), userId, course.getId(), course.getStoreId(),
+                quote.getQuantity(), quote.getPayAmount());
         // 新建的单一定是 UNPAID，凭证要等付款后才出，所以这里传空列表（actions 只会给 PAY/CANCEL）
         return toVO(booking, new ArrayList<>());
+    }
+
+    // =====================================================================
+    // 下单页试算
+    // =====================================================================
+    @Override
+    public BookingPreviewVO preview(Long userId, Long courseId, Long storeId,
+                                    Integer quantity, Long couponRecordId) {
+
+        // ★与 create 同一个算价方法，差别只有 withCouponList=true（要顺带把券列表带回去）
+        BookingPriceCalculator.Quote quote =
+                priceCalculator.quote(userId, courseId, storeId, quantity, couponRecordId, true);
+        CourseDTO course = quote.getCourse();
+
+        List<CouponOptionVO> coupons = new ArrayList<>(quote.getCouponOptions().size());
+        for (CouponUsableDTO option : quote.getCouponOptions()) {
+            coupons.add(CouponOptionVO.builder()
+                    .recordId(option.getRecordId())
+                    .couponId(option.getCouponId())
+                    .title(option.getTitle())
+                    .couponType(option.getCouponType())
+                    .threshold(option.getThreshold())
+                    .thresholdText(thresholdText(option.getThreshold()))
+                    .discount(option.getDiscount())
+                    .discountText(option.getDiscount() == null ? null : "-¥" + plain(option.getDiscount()))
+                    .usable(option.isUsable())
+                    .reason(option.getReason())
+                    .build());
+        }
+
+        return BookingPreviewVO.builder()
+                .courseId(course.getId())
+                .courseName(course.getName())
+                .storeId(course.getStoreId())
+                .storeName(course.getStoreName() == null ? "门店未配置" : course.getStoreName())
+                .lessonHours(course.getLessonHours())
+                .saleType(course.getSaleType())
+                .timesGranted(quote.getTimesGranted())
+                .quantity(quote.getQuantity())
+                .maxQuantity(OrderConstants.MAX_QUANTITY_PER_ITEM)
+                .unitPrice(quote.getUnitPrice())
+                .unitPriceText(formatMoney(quote.getUnitPrice()))
+                .originalAmount(quote.getOriginalAmount())
+                .originalAmountText(formatMoney(quote.getOriginalAmount()))
+                .discountAmount(quote.getDiscountAmount())
+                .discountAmountText(formatMoney(quote.getDiscountAmount()))
+                .payAmount(quote.getPayAmount())
+                .payAmountText(formatMoney(quote.getPayAmount()))
+                .couponRecordId(quote.getCouponRecordId())
+                .couponUsable(quote.isCouponUsable())
+                .couponTitle(quote.getCouponTitle())
+                .couponReason(quote.getCouponReason())
+                .coupons(coupons)
+                // 份数 = 凭证张数（D4：多份不合并），付款后就是这个数
+                .entitlementCount(quote.getQuantity())
+                .entitlementText(entitlementText(course, quote.getTimesGranted(), quote.getQuantity()))
+                .ruleSummary(course.getRuleSummary())
+                .ruleTexts(course.getRuleTexts())
+                .build();
+    }
+
+    /** 门槛文案：0 或 null 都是"无门槛"，否则"满 X 可用"。用户看得懂比字段准确更重要 */
+    private String thresholdText(BigDecimal threshold) {
+        if (threshold == null || threshold.compareTo(BigDecimal.ZERO) <= 0) {
+            return "无门槛";
+        }
+        return "满 " + plain(threshold) + " 可用";
+    }
+
+    /** 凭证说明文案：把"买完会得到几张、每张几次"一句话说清，省得用户付完才发现理解错了 */
+    private String entitlementText(CourseDTO course, Integer timesGranted, int quantity) {
+        if ("UNLIMITED".equals(course.getSaleType())) {
+            return "共 " + quantity + " 张凭证，每张在有效期内不限次上课";
+        }
+        return "共 " + quantity + " 张凭证，每张可上 " + timesGranted + " 次";
+    }
+
+    /** 金额去掉多余的 0（12.50 → 12.5），只用于拼文案；显示用的规范格式还是走 formatMoney */
+    private String plain(BigDecimal amount) {
+        return amount.stripTrailingZeros().toPlainString();
     }
 
     // =====================================================================
@@ -217,59 +268,37 @@ public class BookingServiceImpl implements BookingService {
      * "钱已扣但凭证没生成"（用户付了钱约不了课）或"凭证生成了但钱没扣"（白送课）——
      * 两者都要靠对账才发现。这里不需要分布式事务：订单与凭证<b>同在 yd_order 一个库</b>。</p>
      *
-     * <p>★整组支付用一条 UPDATE 而不是循环调单笔：循环里第 3 张失败时前 2 张已提交，
-     * 用户会遇到"付了一部分"这种说不清的状态。</p>
+     * <p>★CAS 那一手的价值不在并发，而在<b>重复提交</b>：
+     * {@code UPDATE ... WHERE status='UNPAID'} 影响 0 行就说明这张单已经不是待支付
+     * （用户刷了两次、或者已经被超时任务取消了），此时绝不能出票。
+     * 出两次票等于白送课，而这条判断只需要一个 WHERE 条件，不用锁、不用幂等表。</p>
      */
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public void pay(Long userId, String orderNo, String parentNo) {
-        boolean groupPay = parentNo != null && !parentNo.isBlank();
-        if (!groupPay && (orderNo == null || orderNo.isBlank())) {
+    public void pay(Long userId, String orderNo) {
+        if (orderNo == null || orderNo.isBlank()) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "缺少订单号");
         }
         LocalDateTime now = LocalDateTime.now();
 
-        List<Booking> paidOrders = new ArrayList<>();
-        if (groupPay) {
-            // ① 整组 CAS：同组所有 UNPAID 一起变 PAID。影响 0 行 = 这组已经不待支付
-            if (bookingMapper.markGroupPaid(parentNo, userId, now) == 0) {
-                throw new BusinessException(ErrorCode.BOOKING_STATUS_ERROR);
-            }
-            // ② 取回这组里已支付的单（可能有些早就付过了，只处理现在是 PAID 的）
-            paidOrders = bookingMapper.selectList(new LambdaQueryWrapper<Booking>()
-                    .eq(Booking::getParentNo, parentNo)
-                    .eq(Booking::getUserId, userId)
-                    .eq(Booking::getStatus, BookingStatus.PAID));
-        } else {
-            // ① 单笔 CAS。影响 0 行 = 状态不是 UNPAID（重复支付、或已被超时任务取消）
-            if (bookingMapper.markPaid(orderNo, userId, now) == 0) {
-                throw new BusinessException(ErrorCode.BOOKING_STATUS_ERROR);
-            }
-            paidOrders.add(loadOwned(userId, orderNo));
+        // ===== ① CAS：UNPAID → PAID。影响 0 行 = 状态已变（重复支付 / 已被超时取消）=====
+        if (bookingMapper.markPaid(orderNo, userId, now) == 0) {
+            throw new BusinessException(ErrorCode.BOOKING_STATUS_ERROR);
         }
+        Booking booking = loadOwned(userId, orderNo);
 
-        // ===== ③ 逐单出票：份数 = quantity，多份不合并（D4）=====
-        int granted = 0;
-        for (Booking booking : paidOrders) {
-            granted += entitlementService.grantForPaidOrder(booking).size();
-        }
-        log.info("支付成功: userId={}, 模式={}, 单数={}, 出票 {} 张", userId,
-                groupPay ? "整组 " + parentNo : "单笔 " + orderNo, paidOrders.size(), granted);
+        // ===== ② 出票：份数 = quantity，多份不合并（D4）=====
+        int granted = entitlementService.grantForPaidOrder(booking).size();
+        log.info("支付成功: userId={}, orderNo={}, 出票 {} 张", userId, orderNo, granted);
 
-        // ===== ④ 站内通知（一次给全组，别每张单发一条刷屏）=====
-        String firstName = paidOrders.get(0).getCourseName();
+        // ===== ③ 站内通知 =====
         notifyPublisher.publishBookingNotify(userId, "支付成功，凭证已生效",
-                "「" + firstName + "」" + (paidOrders.size() > 1 ? "等 " + paidOrders.size() + " 笔订单" : "")
-                        + "已支付，共生成 " + granted + " 张凭证。"
+                "「" + booking.getCourseName() + "」已支付，共生成 " + granted + " 张凭证。"
                         + "凭证只能在购买门店约教练，在「我的凭证」里选一张就能去约时间。");
     }
 
     @Override
-    public void cancel(Long userId, String orderNo, String parentNo) {
-        if (parentNo != null && !parentNo.isBlank()) {
-            cancelGroup(userId, parentNo);
-            return;
-        }
+    public void cancel(Long userId, String orderNo) {
         if (orderNo == null || orderNo.isBlank()) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "缺少订单号");
         }
@@ -288,36 +317,6 @@ public class BookingServiceImpl implements BookingService {
                 "「" + booking.getCourseName() + "」的订单已取消"
                         + (booking.getCouponRecordId() != null ? "，使用的优惠券已退回。" : "。"));
         log.info("订单已取消: orderNo={}, userId={}", orderNo, userId);
-    }
-
-    /**
-     * 整组取消：购物车合并下单出的 N 张待支付单一起取消。
-     * <p>★一组单要么整体付、要么整体撤。让用户在收银台上看到
-     * "3 张里取消了 2 张"是最糟糕的状态——他接下来不知道该付哪一张。</p>
-     */
-    private void cancelGroup(Long userId, String parentNo) {
-        // 先取回这一组的单，退券与通知都要逐张处理（★退券必须在状态改完之后）
-        List<Booking> group = bookingMapper.selectList(new LambdaQueryWrapper<Booking>()
-                .eq(Booking::getParentNo, parentNo)
-                .eq(Booking::getUserId, userId));
-        if (group.isEmpty()) {
-            throw new BusinessException(ErrorCode.BOOKING_NOT_FOUND);
-        }
-        if (bookingMapper.cancelGroup(parentNo, userId, "用户主动取消", LocalDateTime.now()) == 0) {
-            throw new BusinessException(ErrorCode.BOOKING_STATUS_ERROR, "该组订单已支付或已取消，无法取消");
-        }
-
-        int couponReturned = 0;
-        for (Booking booking : group) {
-            if (booking.getCouponRecordId() != null) {
-                refundCouponIfNeeded(booking, booking.getOrderNo());
-                couponReturned++;
-            }
-        }
-        notifyPublisher.publishBookingNotify(userId, "订单已取消",
-                "这一组 " + group.size() + " 笔订单已取消"
-                        + (couponReturned > 0 ? "，使用的 " + couponReturned + " 张优惠券已退回。" : "。"));
-        log.info("整组订单已取消: parentNo={}, userId={}, 单数={}", parentNo, userId, group.size());
     }
 
     /**
@@ -557,8 +556,6 @@ public class BookingServiceImpl implements BookingService {
 
         return BookingDetailVO.builder()
                 .orderNo(booking.getOrderNo())
-                .parentNo(booking.getParentNo())
-                .isFromCart(booking.getParentNo() != null)
                 .status(booking.getStatus())
                 .statusText(BookingStatus.textOf(booking.getStatus()))
                 .courseId(booking.getCourseId())
@@ -623,9 +620,8 @@ public class BookingServiceImpl implements BookingService {
         if (booking == null) {
             throw new BusinessException(ErrorCode.BOOKING_NOT_FOUND);
         }
-        // 复用用户侧的取消逻辑：状态条件、退券、通知三件事不重复实现一遍。
-        // ★管理端只按单号撤这一笔（代客操作要精确，不该顺手把同组别的单也撤了）
-        cancel(booking.getUserId(), orderNo, null);
+        // 复用用户侧的取消逻辑：状态条件、退券、通知三件事不重复实现一遍
+        cancel(booking.getUserId(), orderNo);
         log.info("管理端代客取消订单: orderNo={}, 对象 userId={}", orderNo, booking.getUserId());
     }
 
@@ -754,7 +750,6 @@ public class BookingServiceImpl implements BookingService {
 
         return BookingVO.builder()
                 .orderNo(booking.getOrderNo())
-                .parentNo(booking.getParentNo())
                 .courseId(booking.getCourseId())
                 .courseName(booking.getCourseName())
                 .courseKind(booking.getCourseKind())
@@ -779,7 +774,6 @@ public class BookingServiceImpl implements BookingService {
                 .refundText(formatTime(booking.getRefundAt()))
                 .cancelReason(booking.getCancelReason())
                 .entitlementText(entitlementText.toString())
-                .subTitle(booking.getParentNo() == null ? "" : "购物车合并下单")
                 .actions(actions)
                 .build();
     }

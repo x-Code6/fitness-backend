@@ -36,6 +36,7 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -172,6 +173,34 @@ public class CouponServiceImpl implements CouponService {
                     .build());
         }
         return result;
+    }
+
+    @Override
+    public List<CouponUsableDTO> usableList(Long userId, Long courseId, Long storeId, BigDecimal amount) {
+
+        // 查：只取还没用掉的持券记录。已 USED / 已过期的不进这个列表，
+        // 因为选券页不需要"一张用过的券"出现在候选里，那是「我的券」页的事
+        List<UserCoupon> records = userCouponMapper.selectList(new LambdaQueryWrapper<UserCoupon>()
+                .eq(UserCoupon::getUserId, userId)
+                .eq(UserCoupon::getStatus, "UNUSED")
+                .orderByDesc(UserCoupon::getId));
+
+        List<CouponUsableDTO> options = new ArrayList<>(records.size());
+        for (UserCoupon record : records) {
+            // ★逐张复用 usableInfo：门槛、使用时间窗口、课程白名单、门店白名单
+            //   全部走同一份判断，这里不重复写任何规则，也不做"批量取模板再自己算"的优化
+            //   ——那种优化就是把规则复制第二遍的开始。
+            //   注意这是 N 次 selectById（券 + 模板各一次），但 N 是"一个人手里的券"，
+            //   量级是个位数到十几，不值得为它写 JOIN。
+            options.add(usableInfo(record.getId(), userId, amount, courseId, storeId));
+        }
+
+        // 可用的排前面，同为可用的按抵扣额从大到小：前端直接按顺序渲染就是"推荐的第一张"
+        options.sort(Comparator
+                .comparing((CouponUsableDTO option) -> option.isUsable() ? 0 : 1)
+                .thenComparing(option -> option.getDiscount() == null
+                        ? BigDecimal.ZERO : option.getDiscount(), Comparator.reverseOrder()));
+        return options;
     }
 
     // =====================================================================

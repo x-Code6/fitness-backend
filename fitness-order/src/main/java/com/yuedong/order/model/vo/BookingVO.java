@@ -31,8 +31,6 @@ public class BookingVO {
     /** 对外订单号。★不给自增 id：会泄露业务量，且跨库关联要用它 */
     private String orderNo;
 
-    /** 购物车合并结算的组号；null = 单买 */
-    private String parentNo;
 
     private Long courseId;
 
@@ -98,9 +96,6 @@ public class BookingVO {
      * 前端可以直接渲染不用判空。</p>
      */
     private String entitlementText;
-
-    /** 副标题：购物车合并下单时给"购物车合并下单"，单买给空串 */
-    private String subTitle;
 
     /**
      * 可执行动作：{@code PAY / CANCEL / BOOK / RATE / AGAIN}。

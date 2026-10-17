@@ -8,6 +8,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 
 import java.math.BigDecimal;
+import java.util.List;
 
 /**
  * 优惠券契约（课程服务承载优惠券域；订单服务下单用券时 Feign 调用）。
@@ -37,6 +38,25 @@ public interface CouponClient {
     Result<Boolean> use(@RequestParam("recordId") Long recordId,
                         @RequestParam("userId") Long userId,
                         @RequestParam("orderNo") String orderNo);
+
+    /**
+     * 批量试算：这个用户手里的券，在"这门课 × 这家店 × 这个金额"下各有几张能用。
+     *
+     * <p>★下单页每改一次份数就要拉一次可用券列表，如果逐张调 {@link #info} 就是
+     * N 次 Feign 往返；这里让课程侧一次返回，网络往返从 N 次变 1 次。</p>
+     *
+     * <p>★实现上它<b>只是把 {@link #info} 循环一遍</b>，绝不允许再写一套判断规则。
+     * "这张券能不能用"在五处条件里（金额门槛、有效期窗口、课程白名单、门店白名单、
+     * 已使用状态），规则一旦有两份实现就会漂移，表现是
+     * "选券页显示可用、点提交报优惠券不可用"。</p>
+     *
+     * @param amount 该笔订单原价（判门槛）
+     */
+    @GetMapping("/inner/coupon/usable-list")
+    Result<List<CouponUsableDTO>> usableList(@RequestParam("userId") Long userId,
+                                             @RequestParam("courseId") Long courseId,
+                                             @RequestParam("storeId") Long storeId,
+                                             @RequestParam("amount") BigDecimal amount);
 
     /** 退券（订单取消/超时回退为未使用） */
     @PostMapping("/inner/coupon/refund")

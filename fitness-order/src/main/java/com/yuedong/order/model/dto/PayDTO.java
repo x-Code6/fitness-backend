@@ -5,21 +5,17 @@ import lombok.Data;
 /**
  * 支付入参（对应前端 {@code POST /booking/pay}）。
  *
- * <p>★两个字段二选一：{@code orderNo} 单买支付、{@code parentNo} 购物车合并支付。
- * 前端收银台就是这么发的
- * （{@code payBooking(parentNo ? {parentNo} : {orderNo})}），
- * 所以这里<b>不能</b>沿用旧的那个 {@code id} 字段——旧字段名和前端发的键完全不同，
- * 接上真实后端后表现是"接口 200、钱没付"。</p>
+ * <p>★字段名必须和前端发的键一致。这里<b>不能</b>沿用旧的那个 {@code id} 字段——
+ * 旧字段名和前端发的键完全不同，接上真实后端后表现是
+ * "接口 200、钱没付"，比报错更难发现。</p>
  *
- * <p>两个都不传时由服务层报错（不写在注解里，因为"至少传一个"这种跨字段规则
- * 用 Bean Validation 要写自定义校验器，可读性反而更差）。</p>
+ * <p>以前还有一个 {@code parentNo}（购物车合并支付时一次付清同组 N 张单）。
+ * 购物车去掉后一个订单就是一门课，组号没有存在意义了，
+ * 连带删掉 {@code markGroupPaid}／{@code cancelGroup} 两条整组 UPDATE。</p>
  */
 @Data
 public class PayDTO {
 
-    /** 单笔订单号 */
+    /** 要支付的订单号 */
     private String orderNo;
-
-    /** 购物车结算的组号：传它就一次付清同组所有待支付订单 */
-    private String parentNo;
 }

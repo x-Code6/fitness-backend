@@ -1,0 +1,198 @@
+package com.yuedong.order.service;
+
+import com.yuedong.common.exception.BusinessException;
+import com.yuedong.common.result.ErrorCode;
+import com.yuedong.common.result.Result;
+import com.yuedong.course.api.client.CouponClient;
+import com.yuedong.course.api.client.CourseClient;
+import com.yuedong.course.api.dto.CourseDTO;
+import com.yuedong.course.api.dto.CouponUsableDTO;
+import com.yuedong.order.constant.OrderConstants;
+import lombok.Builder;
+import lombok.Data;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+
+import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * 下单算价（★一份规则，两个入口共用）。
+ *
+ * <p>项目里有两个地方需要"这笔买卖该付多少钱"：
+ * <ul>
+ *   <li>{@code /booking/preview}：用户改份数、换券时反复调，只读、不写库；</li>
+ *   <li>{@code /booking/create}：真正建单，成交金额以这里算出的为准。</li>
+ * </ul>
+ * 两者必须走<b>同一个方法</b>。各写一遍的话，试算显示 100、成交按 90 或者反过来，
+ * 是这类系统里最难查的一类不一致——它不是报错，而是两个数字都"看起来合理"。</p>
+ *
+ * <p>★本类<b>不抛"券不可用"</b>：券用不了在试算阶段是一个正常的业务答案
+ * （要显示"差 50 元可用"这种话），不是故障。所以结果里给 {@code couponUsable=false}
+ * 加一句 reason，由调用方决定：preview 照常返回给用户看，create 才抛异常终止下单。</p>
+ */
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class BookingPriceCalculator {
+
+    private final CourseClient courseClient;
+    private final CouponClient couponClient;
+
+    /**
+     * 一次算价的结果。
+     *
+     * <p>★为什么不返回 BigDecimal 而是包一层：下单页要显示的东西是一组相关的数
+     * （原价、抵扣、实付、券名、券不可用的原因、这次会出几张凭证），
+     * 拆成多个方法各查一遍，就会出现"两次查到的课程价格不一样"。一次算完一起给，
+     * 页面上那几个数字天然同源。</p>
+     */
+    @Data
+    @Builder
+    public static class Quote {
+
+        /** 课程快照（名称、门店、课时、售卖形态、每次给几次都在里面） */
+        private CourseDTO course;
+
+        /** 归一化后的份数：null 或小于 1 按 1，超过上限直接报错（不是静默截断） */
+        private int quantity;
+
+        /** 单价快照：来自课程，★永远不接受前端传价 */
+        private BigDecimal unitPrice;
+
+        /** 原价小计 = 单价 × 份数 */
+        private BigDecimal originalAmount;
+
+        /** 券抵扣额。券不可用时为 0（不是"按这张券算但先不收"） */
+        private BigDecimal discountAmount;
+
+        /** 实付 = 原价 - 抵扣，最低 0 */
+        private BigDecimal payAmount;
+
+        /**
+         * 一单给几次（TIMES 形态）；UNLIMITED 为 null 表示不限次。
+         * <p>★这条规则（含"timesPerBuy 为空或小于 1 就按 1 兜底"）也放在这里算，
+         * 因为建单要落进 t_booking.times_granted、试算页要拿它拼"每张可上 2 次"的文案。
+         * 两处各写一遍的话，页面上写的"2 次"和实际出票的"1 次"能差出一个客诉。</p>
+         */
+        private Integer timesGranted;
+
+        /** 用户选的券记录 id；没用券为 null */
+        private Long couponRecordId;
+
+        /** 选的券此刻能不能用 */
+        private boolean couponUsable;
+
+        /** 券名快照（建单时要落进 t_booking.coupon_title） */
+        private String couponTitle;
+
+        /** 券不可用的原因（人话，直接给前端显示："还差 50 元可用"） */
+        private String couponReason;
+
+        /** 这个金额下用户所有未使用的券的判定结果，只有 withCouponList=true 时才填 */
+        private List<CouponUsableDTO> couponOptions;
+    }
+
+    /**
+     * 算一次价。
+     *
+     * @param rawQuantity     前端传的份数，可以为 null（按 1 处理）
+     * @param couponRecordId  选的券，可以为 null
+     * @param withCouponList  要不要顺带返回"我手里所有券"的判定——只有试算页要，
+     *                        建单时不用（那时券已经定了，多一次跨服务调用纯属浪费）
+     */
+    public Quote quote(Long userId, Long courseId, Long storeId, Integer rawQuantity,
+                       Long couponRecordId, boolean withCouponList) {
+
+        // ===== 第 1 步：份数。★超过上限直接报错，不再静默截断 =====
+        // 以前是 Math.min(quantity, 10)：用户点了 20 份，服务端按 10 份建单出票，
+        // 不报错也不提示，他要到"我的凭证"才发现少了一半。没报错的错是最难发现的错。
+        int quantity = rawQuantity == null || rawQuantity < 1 ? 1 : rawQuantity;
+        if (quantity > OrderConstants.MAX_QUANTITY_PER_ITEM) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "一次最多买 " + OrderConstants.MAX_QUANTITY_PER_ITEM + " 份，请分多次下单");
+        }
+
+        // ===== 第 2 步：课程快照。一次 RPC 同时拿到课程字段、门店名与可售状态 =====
+        Result<CourseDTO> detailResult = courseClient.detail(courseId, storeId);
+        if (detailResult.getCode() != 0 || detailResult.getData() == null) {
+            throw new BusinessException(ErrorCode.COURSE_NOT_FOUND);
+        }
+        CourseDTO course = detailResult.getData();
+
+        // ===== 第 3 步：可售判定 =====
+        // "课程存在"不等于"能买"：展示型课程没有购买这个动作，
+        // 而不在可售窗口内的课买下去会拿到一张用不了的凭证
+        if (!"SALE".equals(course.getCourseKind())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "该课程为展示内容，无需购买");
+        }
+        if (!Boolean.TRUE.equals(course.getOnSale())) {
+            throw new BusinessException(ErrorCode.COURSE_NOT_ON_SALE,
+                    "「" + course.getName() + "」当前不可购买（未开售或已停售）");
+        }
+        if (course.getPrice() == null) {
+            // 管理端漏配价格。宁可当场拒绝，也不要建出一张 0 元单
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "该课程未配置价格，请联系门店");
+        }
+
+        BigDecimal unitPrice = course.getPrice();
+        BigDecimal originalAmount = unitPrice.multiply(BigDecimal.valueOf(quantity));
+
+        // ===== 第 4 步：选了券就判一次。★不可用不在这里抛异常，见类注释 =====
+        Long appliedCoupon = couponRecordId;
+        boolean couponUsable = false;
+        String couponTitle = null;
+        String couponReason = null;
+        BigDecimal discountAmount = BigDecimal.ZERO;
+        if (appliedCoupon != null) {
+            Result<CouponUsableDTO> couponResult =
+                    couponClient.info(appliedCoupon, userId, originalAmount, courseId, storeId);
+            CouponUsableDTO coupon = couponResult.getData();
+            if (couponResult.getCode() != 0 || coupon == null) {
+                couponReason = ErrorCode.COUPON_NOT_USABLE.getMessage();
+            } else {
+                couponUsable = coupon.isUsable();
+                couponTitle = coupon.getTitle();
+                couponReason = coupon.getReason();
+                // ★只有可用的券才参与抵扣。"券不可用但按它的额度减一下"是不存在的状态
+                discountAmount = couponUsable && coupon.getDiscount() != null
+                        ? coupon.getDiscount() : BigDecimal.ZERO;
+            }
+        }
+
+        // 实付不能为负：满 100 减 120 这类配置错误的券，宁可少收也不能倒找钱
+        BigDecimal payAmount = originalAmount.subtract(discountAmount).max(BigDecimal.ZERO);
+
+        // ===== 第 5 步：试算页还要一份"我手里所有券"的判定 =====
+        // 一次跨服务调用换 N 次，别在这里循环调 info()（每张单一次 RPC，10 张券就是 10 次往返）
+        List<CouponUsableDTO> options = new ArrayList<>();
+        if (withCouponList) {
+            Result<List<CouponUsableDTO>> listResult =
+                    couponClient.usableList(userId, courseId, storeId, originalAmount);
+            if (listResult.getCode() == 0 && listResult.getData() != null) {
+                options = listResult.getData();
+            }
+        }
+
+        // UNLIMITED 存 null 表示不限次；TIMES 用管理员配课时时定的 times_per_buy（★不是固定 1）
+        Integer timesGranted = "UNLIMITED".equals(course.getSaleType()) ? null
+                : (course.getTimesPerBuy() == null || course.getTimesPerBuy() < 1 ? 1 : course.getTimesPerBuy());
+
+        return Quote.builder()
+                .course(course)
+                .quantity(quantity)
+                .unitPrice(unitPrice)
+                .originalAmount(originalAmount)
+                .discountAmount(discountAmount)
+                .payAmount(payAmount)
+                .timesGranted(timesGranted)
+                .couponRecordId(appliedCoupon)
+                .couponUsable(couponUsable)
+                .couponTitle(couponTitle)
+                .couponReason(couponReason)
+                .couponOptions(options)
+                .build();
+    }
+}

@@ -1,7 +1,7 @@
 -- ============================================================
 -- 悦动健身 v2 · 订单域 yd_order
 -- 归属服务：fitness-order (8103)
--- 职责：购买订单、权益凭证、私教预约单、教练时段占用、购物车、评价与评分统计
+-- 职责：购买订单、权益凭证、私教预约单、教练时段占用、评价与评分统计
 --
 -- v2 把旧的"一张 t_booking 同时当订单和预约"拆成三条独立状态机：
 --   订单轴 t_booking      —— 钱（UNPAID/PAID/CANCELED/REFUNDED）
@@ -24,10 +24,9 @@ USE yd_order;
 CREATE TABLE IF NOT EXISTS t_booking (
     id              BIGINT        NOT NULL AUTO_INCREMENT COMMENT '主键（内部）',
     order_no        VARCHAR(32)   NOT NULL COMMENT '对外订单号。不用 id 对外：自增 id 会泄露业务量，且跨库关联要传出去',
-    parent_no       VARCHAR(32)   NULL COMMENT '★购物车合并结算的组号：一次勾 3 门课建 3 张单，parent_no 相同，支付时一条 UPDATE...WHERE parent_no=? 批量流转。不引入父订单表，避免又一层状态机',
     user_id         BIGINT        NOT NULL COMMENT '下单人（跨库 → yd_user.t_user.id）',
     course_id       BIGINT        NOT NULL COMMENT '买了哪门课（跨库 → yd_course）',
-    course_kind     VARCHAR(10)   NOT NULL DEFAULT 'SALE' COMMENT '快照：SALE/CONTENT。秒杀与购物车只允许 SALE，这一列用于事后校验和展示分流',
+    course_kind     VARCHAR(10)   NOT NULL DEFAULT 'SALE' COMMENT '快照：SALE/CONTENT。秒杀与下单只允许 SALE，这一列用于事后校验和展示分流',
     store_id        BIGINT        NOT NULL COMMENT '在哪家店买的——私教课物理位置约束，之后只能在该店约教练',
     activity_id     BIGINT        NULL COMMENT '秒杀活动 id；NULL = 普通购买（v2 里"是不是秒杀单"看这一列，比旧模型靠 book_time 文案猜干净）',
     course_name     VARCHAR(50)   NOT NULL COMMENT '课程名快照（跨库 + 高频读 + 要历史原值）',
@@ -53,8 +52,6 @@ CREATE TABLE IF NOT EXISTS t_booking (
     UNIQUE KEY uk_order_no (order_no),
     -- "我的订单"列表：WHERE user_id=? [AND status=?] ORDER BY id DESC
     KEY idx_user_status (user_id, status, id),
-    -- 购物车合并支付：一次 UPDATE 要把同组 N 张单一起流转
-    KEY idx_parent (parent_no, status),
     -- 同人同课去重查询用（v1 这里是普通索引，去重靠"先查再插"，并发双击能造出两张有效单，
     -- v2 的防护补在业务层：见 docs 4.7 幂等三档里"值得防"这一档，用 @Idempotent 拦重复提交）
     KEY idx_course_user (course_id, user_id, status)
@@ -153,26 +150,6 @@ CREATE TABLE IF NOT EXISTS t_coach_busy (
 ) ENGINE = InnoDB COMMENT '教练时段占用（一行一小时，取消才删，上完课保留）';
 
 -- ----------------------------------------------------------------
--- 购物车（存 MySQL 不存 Redis）
--- 理由：这里要带勾选状态、要跨设备、要和订单确认页往返，Redis 一宕机用户挑好的东西就没了。
--- 餐饮类"会话级购物车"用 Redis 合理，本项目不合理。
--- ----------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS t_cart_item (
-    id         BIGINT   NOT NULL AUTO_INCREMENT COMMENT '主键',
-    user_id    BIGINT   NOT NULL COMMENT '谁的车',
-    course_id  BIGINT   NOT NULL COMMENT '哪门课（跨库 → yd_course）',
-    store_id   BIGINT   NOT NULL COMMENT '★认店：同一门课在两家店卖是两个独立条目，结算会各出一张凭证',
-    quantity   INT      NOT NULL DEFAULT 1 COMMENT '份数，1 份 = 1 张凭证（v2 凭证不合并，所以份数直接决定出票张数）',
-    selected   TINYINT  NOT NULL DEFAULT 1 COMMENT '1 勾选结算 / 0 未勾选（购物车页的多选状态要持久，不然刷新就丢）',
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    PRIMARY KEY (id),
-    -- 同一用户同一课同一店只有一条，重复加购走"更新数量"而不是插新行
-    UNIQUE KEY uk_user_course_store (user_id, course_id, store_id),
-    KEY idx_user (user_id)
-) ENGINE = InnoDB COMMENT '购物车';
-
--- ----------------------------------------------------------------
 -- 评价表（一单一评、可删不可改）
 -- ★为什么放 yd_order：写评价要校验"这单已支付、这单没评过"，数据全在本库 →
 --   零跨库；评分汇总统计也在本库（见下面三张 stat 表），与明细同事务更新才安全。
@@ -247,12 +224,12 @@ CREATE TABLE IF NOT EXISTS t_coach_rating_stat (
 -- ============================================================
 
 -- 三张凭证：一张用满、一张用了一次还剩、一张长期有效未用
-INSERT INTO t_booking (id, order_no, parent_no, user_id, course_id, course_kind, store_id, activity_id,
+INSERT INTO t_booking (id, order_no, user_id, course_id, course_kind, store_id, activity_id,
                        course_name, store_name, lesson_hours, sale_type, times_granted, quantity,
                        original_amount, discount_amount, pay_amount, status, pay_time, created_at) VALUES
-(1, 'B20261010100001', NULL, 10001, 1,  'SALE', 1, NULL, '燃脂跳操·Zumba 热舞',  '悦动·大学城店', 1, 'TIMES',     1, 2, 136.00, 0.00,  136.00, 'PAID', NOW() - INTERVAL 3 DAY, NOW() - INTERVAL 3 DAY),
-(2, 'B20261011100002', NULL, 10001, 4,  'SALE', 3, 1,    '动感单车·极速卡路里',  '悦动·高新店',   1, 'UNLIMITED', NULL, 1, 19.90,  0.00,  19.90,  'PAID', NOW() - INTERVAL 2 DAY, NOW() - INTERVAL 2 DAY),
-(3, 'B20261012100003', NULL, 10002, 9,  'SALE', 3, NULL, '私教·增肌入门 2 小时', '悦动·高新店',   2, 'TIMES',     2, 1, 298.00, 50.00, 248.00, 'PAID', NOW() - INTERVAL 1 DAY, NOW() - INTERVAL 1 DAY);
+(1, 'B20261010100001', 10001, 1,  'SALE', 1, NULL, '燃脂跳操·Zumba 热舞',  '悦动·大学城店', 1, 'TIMES',     1, 2, 136.00, 0.00,  136.00, 'PAID', NOW() - INTERVAL 3 DAY, NOW() - INTERVAL 3 DAY),
+(2, 'B20261011100002', 10001, 4,  'SALE', 3, 1,    '动感单车·极速卡路里',  '悦动·高新店',   1, 'UNLIMITED', NULL, 1, 19.90,  0.00,  19.90,  'PAID', NOW() - INTERVAL 2 DAY, NOW() - INTERVAL 2 DAY),
+(3, 'B20261012100003', 10002, 9,  'SALE', 3, NULL, '私教·增肌入门 2 小时', '悦动·高新店',   2, 'TIMES',     2, 1, 298.00, 50.00, 248.00, 'PAID', NOW() - INTERVAL 1 DAY, NOW() - INTERVAL 1 DAY);
 
 INSERT INTO t_entitlement (id, user_id, order_no, course_id, store_id, course_name, store_name,
                            lesson_hours, sale_type, total_times, used_times, valid_until, status) VALUES
@@ -297,8 +274,3 @@ INSERT INTO t_rating (order_no, user_id, course_id, store_id, coach_id, coach_na
 INSERT INTO t_store_rating_stat (store_id, rating_sum, rating_count) VALUES (1, 5, 1), (3, 9, 2);
 INSERT INTO t_course_rating_stat (course_id, rating_sum, rating_count) VALUES (1, 5, 1), (4, 4, 1), (9, 5, 1);
 INSERT INTO t_coach_rating_stat (coach_id, rating_sum, rating_count) VALUES (1, 5, 1), (4, 4, 1), (5, 5, 1);
-
--- 购物车里留两条（一个勾选一个不勾选，便于前端联显隐与合计）
-INSERT INTO t_cart_item (user_id, course_id, store_id, quantity, selected) VALUES
-(10001, 2, 1, 1, 1),
-(10001, 3, 2, 2, 0);

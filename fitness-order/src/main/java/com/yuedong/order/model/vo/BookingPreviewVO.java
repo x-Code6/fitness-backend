@@ -1,0 +1,105 @@
+package com.yuedong.order.model.vo;
+
+import lombok.Builder;
+import lombok.Data;
+
+import java.math.BigDecimal;
+import java.util.List;
+
+/**
+ * 下单页试算结果（对应前端 {@code GET /booking/preview}）。
+ *
+ * <p>★这个页面上<b>所有要素钱的数字都来自后端</b>：前端只负责显示，
+ * 用户改一次份数、换一张券就重新打一次这个接口。
+ * 前端不参与任何金额计算，更不能把金额传回来——
+ * 传回来就等于把定价权交给了抓包工具。</p>
+ *
+ * <p>每个金额都配一个 {@code *Text}：分数的显示格式（保留几位、带不带 ¥）
+ * 属于界面口径，由后端一次拼好，免得前端各处自己 toFixed 出四种样子。</p>
+ */
+@Data
+@Builder
+public class BookingPreviewVO {
+
+    // ---------- 买的是什么（快照，够页面渲染，不让前端再查一次课程详情）----------
+
+    private Long courseId;
+
+    private String courseName;
+
+    private Long storeId;
+
+    private String storeName;
+
+    /** 一节课几小时，页面要显示"2 小时/节" */
+    private Integer lessonHours;
+
+    /** TIMES 按次 / UNLIMITED 有效期内不限次 */
+    private String saleType;
+
+    /** TIMES 时一单给几次；UNLIMITED 为 null */
+    private Integer timesGranted;
+
+    // ---------- 份数 ----------
+
+    private Integer quantity;
+
+    /**
+     * 份数上限，★由后端下发而不是前端写死。
+     * <p>前端加号到这个数就禁用。以前服务端是静默 {@code Math.min} 截断，
+     * 用户点 20 份、后端按 10 份建单，不报错也不提示；现在超限直接报错，
+     * 而这个数是同一个常量来的，两边不会各写一份。</p>
+     */
+    private Integer maxQuantity;
+
+    // ---------- 金额（全部后端算）----------
+
+    private BigDecimal unitPrice;
+
+    private String unitPriceText;
+
+    /** 原价小计 = 单价 × 份数 */
+    private BigDecimal originalAmount;
+
+    private String originalAmountText;
+
+    /** 券抵扣额。所选券不可用时为 0 */
+    private BigDecimal discountAmount;
+
+    private String discountAmountText;
+
+    /** 实付 = 原价 - 抵扣，最低 0。★这是唯一有效的成交金额 */
+    private BigDecimal payAmount;
+
+    private String payAmountText;
+
+    // ---------- 券 ----------
+
+    /** 回显用户当前选中的券记录 id；没用券为 null */
+    private Long couponRecordId;
+
+    /** 选中的这张券此刻是否可用 */
+    private Boolean couponUsable;
+
+    /** 可用时的券名（页面显示"已选：新人无门槛券 -¥10"） */
+    private String couponTitle;
+
+    /** 不可用的原因（页面直接显示"还差 50 元可用"，用户才知道该做什么） */
+    private String couponReason;
+
+    /** 这个份数下，用户手里所有未使用券的判定结果，可用的排在前面 */
+    private List<CouponOptionVO> coupons;
+
+    // ---------- 买完会得到什么 ----------
+
+    /** 付款后出几张凭证（= 份数，多份不合并） */
+    private Integer entitlementCount;
+
+    /** 凭证说明文案，如"共 2 张凭证，每张可上 1 次" */
+    private String entitlementText;
+
+    /** 有效期与使用规则摘要（来自课程侧规则说明，★不是订单服务自己编的） */
+    private String ruleSummary;
+
+    private List<String> ruleTexts;
+}
