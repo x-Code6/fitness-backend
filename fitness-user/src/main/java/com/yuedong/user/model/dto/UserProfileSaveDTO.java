@@ -30,6 +30,6 @@ public class UserProfileSaveDTO {
     /** 偏好时段枚举值列表 */
     private List<String> preferSlots;
 
-    /** 要跟踪哪些指标，取值必须来自 GET /body-record/metrics 的 code */
+    /** 要跟踪哪些指标，取值必须来自 GET /body/metrics 的 code */
     private List<String> trackMetrics;
 }

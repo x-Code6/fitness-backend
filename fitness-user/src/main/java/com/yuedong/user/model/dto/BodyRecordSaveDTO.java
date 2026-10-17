@@ -9,7 +9,7 @@ import java.math.BigDecimal;
  *
  * <p>★<b>没有 min/max 注解</b>，范围校验全部走 {@code BodyMetric} 那份元数据。
  * 原因：写在注解上就等于"每个字段各存一份范围"，而前端还要一份才能做即时提示，
- * 两处一改就漂。现在前端调 {@code GET /body-record/metrics} 拿同一份定义，
+ * 两处一改就漂。现在前端调 {@code GET /body/metrics} 拿同一份定义，
  * 后端保存时按同一份定义拦，只有一处需要维护。</p>
  *
  * <p>★除体重外全部可空，而且"不填"必须是 null 而不是 0——
