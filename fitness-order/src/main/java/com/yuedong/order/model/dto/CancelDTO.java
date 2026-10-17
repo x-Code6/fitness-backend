@@ -13,6 +13,4 @@ public class CancelDTO {
     /** 单笔订单号 */
     private String orderNo;
 
-    /** 组号：整组一起取消 */
-    private String parentNo;
 }

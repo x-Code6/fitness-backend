@@ -20,8 +20,6 @@ public class BookingDetailVO {
 
     private String orderNo;
 
-    /** 组号；null = 单买 */
-    private String parentNo;
 
     /** 是否来自购物车合并下单（前端据此显示"来自购物车"标签） */
     private Boolean isFromCart;

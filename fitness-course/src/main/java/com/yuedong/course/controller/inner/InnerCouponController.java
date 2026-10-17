@@ -16,6 +16,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.math.BigDecimal;
+import java.util.List;
 
 /**
  * 优惠券内部/管理接口。签名与 fitness-course-api 的 CouponClient / CourseAdminClient 对应。
@@ -38,6 +39,19 @@ public class InnerCouponController {
                                         @RequestParam(required = false) Long courseId,
                                         @RequestParam(required = false) Long storeId) {
         return Result.ok(couponService.usableInfo(recordId, userId, amount, courseId, storeId));
+    }
+
+    /**
+     * 批量试算：这个用户此时此地买这个金额，手里哪些券能用。
+     * <p>下单页选券用。判规则的代码在 {@code CouponServiceImpl#usableList} 里
+     * 只是循环 {@link #info} 背后的那一份实现，没有第二套规则。</p>
+     */
+    @GetMapping("/usable-list")
+    public Result<List<CouponUsableDTO>> usableList(@RequestParam Long userId,
+                                                    @RequestParam Long courseId,
+                                                    @RequestParam Long storeId,
+                                                    @RequestParam BigDecimal amount) {
+        return Result.ok(couponService.usableList(userId, courseId, storeId, amount));
     }
 
     /** 核销用券（UNUSED → USED，绑定订单号） */

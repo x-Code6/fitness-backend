@@ -28,8 +28,6 @@ public class BookingDTO {
     /** 对外订单号 */
     private String orderNo;
 
-    /** 购物车合并结算的组号；null = 单买 */
-    private String parentNo;
 
     /** 下单人。★给管理端用来批量聚合会员昵称 */
     private Long userId;

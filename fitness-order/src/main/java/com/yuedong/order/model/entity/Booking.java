@@ -38,9 +38,6 @@ public class Booking {
     @TableField("order_no")
     private String orderNo;
 
-    /** 购物车合并结算的组号；单笔购买为 null。同组一次支付 */
-    @TableField("parent_no")
-    private String parentNo;
 
     @TableField("user_id")
     private Long userId;

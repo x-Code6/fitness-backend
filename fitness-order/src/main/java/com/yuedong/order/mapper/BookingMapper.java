@@ -37,18 +37,6 @@ public interface BookingMapper extends BaseMapper<Booking> {
                  @Param("now") LocalDateTime now);
 
     /**
-     * 整组支付：购物车一次结算出的多张订单一起流转，返回被更新的实际行数。
-     *
-     * <p>★用一条 UPDATE 而不是循环调 {@link #markPaid}：循环里第 3 张失败时前 2 张已经提交，
-     * 用户会遇到"付了一部分"。整组一条语句 + 外层事务，才是"一次支付一组订单"的正确形态。</p>
-     */
-    @Update("UPDATE t_booking SET status = 'PAID', pay_time = #{now} " +
-            "WHERE parent_no = #{parentNo} AND user_id = #{userId} AND status = 'UNPAID'")
-    int markGroupPaid(@Param("parentNo") String parentNo,
-                      @Param("userId") Long userId,
-                      @Param("now") LocalDateTime now);
-
-    /**
      * 取消：只有未支付的单能取消（已支付走退款，不是取消）。
      *
      * @return 1 取消成功；0 状态已是 PAID/CANCELED，用户该刷新页面
@@ -59,19 +47,6 @@ public interface BookingMapper extends BaseMapper<Booking> {
                @Param("userId") Long userId,
                @Param("reason") String reason,
                @Param("now") LocalDateTime now);
-
-    /**
-     * 整组取消：购物车合并下单出的 N 张待支付单一起取消。
-     *
-     * <p>★和 {@link #markGroupPaid} 对称：一组单要么整体付掉、要么整体取消，
-     * 让用户在收银台上看到"3 张里取消了 2 张"是最糟糕的状态。</p>
-     */
-    @Update("UPDATE t_booking SET status = 'CANCELED', cancel_reason = #{reason}, canceled_at = #{now} " +
-            "WHERE parent_no = #{parentNo} AND user_id = #{userId} AND status = 'UNPAID'")
-    int cancelGroup(@Param("parentNo") String parentNo,
-                    @Param("userId") Long userId,
-                    @Param("reason") String reason,
-                    @Param("now") LocalDateTime now);
 
     /**
      * 超时未支付自动取消：与 {@link #cancel} 的区别是<b>不校验 user_id</b>（MQ 消费场景）。

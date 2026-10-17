@@ -34,6 +34,22 @@ public interface CouponService {
     /** 我的券：持券记录 + 模板信息 + 现算的使用截止 */
     List<MyCouponVO> myCoupons(Long userId);
 
+    /**
+     * 批量试算：用户手里的券在"这门课 × 这家店 × 这个金额"下能不能用、能抵多少。
+     *
+     * <p>★判"能不能用"的规则只有 {@link #usableInfo} 一份，本方法<b>只负责循环它</b>。
+     * 判断规则有五个来源（金额门槛、券的使用时间窗口、课程白名单、门店白名单、
+     * 是否已使用），任何一处复制一份，两处就会随时间漂移，
+     * 用户看到的就是"券在列表里是亮的、提交时报不可用"。</p>
+     *
+     * <p>★只查 {@code status='UNUSED'} 的记录：已经用掉的券没必要出现在选券列表里，
+     * 让前端去过滤"不可用"的噪音，等于把数据量当成筛子用。</p>
+     *
+     * @param amount 该笔订单原价（判门槛）
+     * @return 可用的排在前面、按抵扣额从大到小；不可用的附 reason，顺序保持给用户看原因
+     */
+    List<CouponUsableDTO> usableList(Long userId, Long courseId, Long storeId, BigDecimal amount);
+
     /** 领券。SECKILL 走 Lua，NORMAL 走 COUNT 判限领 */
     void receive(Long userId, Long couponId);
 
