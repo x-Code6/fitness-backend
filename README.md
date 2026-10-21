@@ -13,7 +13,8 @@
 | fitness-order | 8103 | 预约/状态机/延迟取消/秒杀 Lua+MQ | 🔜 第③④步 |
 | fitness-point | 8104 | Bitmap 打卡/积分/ZSet 排行榜 | 🔜 第⑤步 |
 | fitness-behavior | 8106 | 埋点上报 → Kafka → 热门课程榜 | 🔜 第⑥步 |
-| fitness-community | P1 | Feed 流/点赞/关注 | ⏳ |
+| fitness-community | 8105 | Feed 流/点赞/关注 | ✅ 已完成 |
+| fitness-file | 8108 | 图片上传 + /uploads 静态读取 + t_file 元数据 | ✅ 已完成 |
 
 ## 环境要求
 
