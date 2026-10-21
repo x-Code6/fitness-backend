@@ -16,7 +16,7 @@ public class UserUpdateDTO {
     @Size(max = 20, message = "昵称最长 20 个字符")
     private String nickname;
 
-    /** 头像访问路径，长度上限与 t_user.avatar_image 对齐 */
-    @Size(max = 255, message = "头像路径过长")
+    /** 头像访问路径，长度上限与 t_user.avatar_image 的 VARCHAR(200) 对齐 */
+    @Size(max = 200, message = "头像路径过长")
     private String avatarImage;
 }

@@ -26,7 +26,7 @@ public class GiftSaveDTO {
     @Min(value = 0, message = "库存不能为负数")
     private Integer stock;
 
-    /** 商品图访问路径（上传接口返回值），可空 */
-    @Size(max = 255, message = "商品图路径过长")
+    /** 商品图访问路径（上传接口返回值），可空；长度与 t_gift.image 的 VARCHAR(200) 对齐 */
+    @Size(max = 200, message = "商品图路径过长")
     private String image;
 }

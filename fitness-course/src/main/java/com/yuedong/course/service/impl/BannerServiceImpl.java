@@ -1,6 +1,7 @@
 package com.yuedong.course.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.yuedong.common.exception.BusinessException;
 import com.yuedong.common.model.PageDTO;
@@ -262,20 +263,22 @@ public class BannerServiceImpl implements BannerService {
         if (banner == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "活动页不存在");
         }
-        banner.setTitle(dto.getTitle());
-        banner.setSubtitle(dto.getSubtitle());
-        banner.setSortNo(dto.getSortNo() == null ? 0 : dto.getSortNo());
-        if (dto.getStatus() != null) {
-            banner.setStatus(dto.getStatus());
+        if (dto.getTitle() == null || dto.getTitle().isBlank()) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "活动页标题不能为空");
         }
-        if (dto.getStartTime() != null && !dto.getStartTime().isBlank()) {
-            banner.setStartTime(parseTime(dto.getStartTime()));
-        }
-        if (dto.getEndTime() != null && !dto.getEndTime().isBlank()) {
-            banner.setEndTime(parseTime(dto.getEndTime()));
-        }
-        banner.setUpdatedAt(LocalDateTime.now());
-        bannerMapper.updateById(banner);
+
+        // ★这里用 UpdateWrapper 而不是 updateById：updateById 会跳过 null 字段，
+        // 管理员把副标题或展示时间清空后，旧值会留在库里，页面上看起来"清不掉"。
+        // 编辑弹窗每次都会提交完整表单，所以 null 的语义就是"清空"，必须显式 set。
+        bannerMapper.update(null, new LambdaUpdateWrapper<Banner>()
+                .eq(Banner::getId, banner.getId())
+                .set(Banner::getTitle, dto.getTitle().trim())
+                .set(Banner::getSubtitle, dto.getSubtitle())
+                .set(Banner::getSortNo, dto.getSortNo() == null ? 0 : dto.getSortNo())
+                .set(Banner::getStatus, dto.getStatus() == null ? banner.getStatus() : dto.getStatus())
+                .set(Banner::getStartTime, parseTime(dto.getStartTime()))
+                .set(Banner::getEndTime, parseTime(dto.getEndTime()))
+                .set(Banner::getUpdatedAt, LocalDateTime.now()));
     }
 
     @Override
@@ -296,9 +299,11 @@ public class BannerServiceImpl implements BannerService {
     public void upsertForCourse(Long courseId, CourseSaveDTO dto) {
         LocalDateTime start = parseTime(dto.getBannerStartTime());
         LocalDateTime end = parseTime(dto.getBannerEndTime());
+        // 开始时间留空 = 立即展示；不要在这里写 now()，否则每次编辑课程都会把
+        // 管理员之前排好的"未来开始展示"重置成当前时间
         upsert(TYPE_COURSE, courseId, Boolean.TRUE.equals(dto.getBannerEnabled()),
                 dto.getBannerImageUrl(), dto.getBannerTitle(), dto.getBannerSubtitle(),
-                dto.getBannerSort(), start == null ? LocalDateTime.now() : start, end);
+                dto.getBannerSort(), start, end);
     }
 
     @Override
