@@ -76,13 +76,13 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
             return deny(exchange, HttpStatus.FORBIDDEN, ErrorCode.FORBIDDEN, "内部接口禁止外部访问");
         }
 
-        // ===== 第 2 步：白名单直接放行 =====
+        // ===== 第 2 步：白名单放行，但带 token 时仍然解析身份 =====
+        // ★以前是"白名单直接放行 + 清掉 X-User-Id"：游客没问题，但登录用户访问
+        //   /api/community/feed?tab=follow、/api/video/list 时下游拿不到 userId，
+        //   关注流为空、视频进度丢失。这里改成"可选认证"：
+        //   带有效 token 就注入身份，不带或 token 无效就当游客，公开内容仍然可浏览。
         if (isWhitelisted(path)) {
-            // 清掉外部可能伪造的 X-User-Id，防止冒充
-            ServerHttpRequest cleaned = exchange.getRequest().mutate()
-                    .headers(h -> h.remove(HttpConstants.HEADER_USER_ID))
-                    .build();
-            return chain.filter(exchange.mutate().request(cleaned).build());
+            return filterWhitelisted(exchange, chain, path);
         }
 
         // ===== 第 3 步：取出 Authorization 头，格式必须为 "Bearer <token>" =====
@@ -102,12 +102,9 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
             return deny(exchange, HttpStatus.UNAUTHORIZED, ErrorCode.TOKEN_INVALID, null);
         }
 
-        // 先 remove 再 add：防止外部伪造 X-User-Id 头（多值头会取到第一个，必须是网关写入的）
-        ServerHttpRequest mutated = exchange.getRequest().mutate()
-                .headers(h -> h.remove(HttpConstants.HEADER_USER_ID))
-                .header(HttpConstants.HEADER_USER_ID, String.valueOf(payload.getId()))
-                .build();
-        ServerWebExchange mutatedExchange = exchange.mutate().request(mutated).build();
+        // 先覆盖再放行：外部带进来的 X-User-Id 必须被网关自己的值替换，
+        // 否则就是"请求头伪造谁就是谁"。set 会覆盖同名头的所有值。
+        ServerWebExchange mutatedExchange = withUserId(exchange, payload.getId());
 
         // ===== 第 5 步：令牌白名单校验（可用 auth.token-check-enabled 关闭，见配置类说明）=====
         if (!authProperties.isTokenCheckEnabled()) {
@@ -127,6 +124,68 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
                     log.info("令牌不在白名单，已吊销或未登记: userId={}, jti={}", payload.getId(), payload.getJti());
                     return deny(mutatedExchange, HttpStatus.UNAUTHORIZED, ErrorCode.TOKEN_INVALID, null);
                 });
+    }
+
+    /**
+     * 白名单请求的"可选认证"。
+     *
+     * <p>规则：</p>
+     * <ul>
+     *   <li>没带 token → 当游客，清掉可能伪造的 X-User-Id；</li>
+     *   <li>带了 token 且验签/白名单都通过 → 注入 userId；</li>
+     *   <li>带了 token 但无效/已吊销 → <b>仍然当游客放行</b>。
+     *       公开接口不应该因为用户 token 过期就打不开；前端可以自行刷新 token。</li>
+     * </ul>
+     */
+    private Mono<Void> filterWhitelisted(ServerWebExchange exchange, GatewayFilterChain chain, String path) {
+        String authorization = exchange.getRequest().getHeaders().getFirst(HttpHeaders.AUTHORIZATION);
+        if (authorization == null || !authorization.startsWith("Bearer ")) {
+            return chain.filter(withoutUserId(exchange));
+        }
+
+        JwtPayload payload;
+        try {
+            payload = jwtUtil.parse(authorization.substring(7));
+        } catch (Exception e) {
+            log.debug("白名单请求携带的 token 无效，按游客处理: path={}, reason={}", path, e.getMessage());
+            return chain.filter(withoutUserId(exchange));
+        }
+
+        ServerWebExchange withUser = withUserId(exchange, payload.getId());
+        if (!authProperties.isTokenCheckEnabled()) {
+            return chain.filter(withUser);
+        }
+
+        // 与强制登录分支同一套 jti 校验：令牌被禁用/登出后不能再以登录身份访问。
+        return redisTemplate.hasKey(RedisKeyConstants.loginToken(payload.getJti()))
+                .defaultIfEmpty(Boolean.FALSE)
+                .flatMap(alive -> Boolean.TRUE.equals(alive)
+                        ? chain.filter(withUser)
+                        : chain.filter(withoutUserId(exchange)))
+                // ★白名单接口在 Redis 故障时降级为游客，而不是整页 500：
+                //   公开内容本来就允许匿名看，丢的只是“登录用户的个性化数据”。
+                //   非白名单接口仍然 fail-close，不能降级。
+                .onErrorResume(e -> {
+                    log.warn("白名单请求校验令牌白名单失败，降级为游客: path={}, reason={}",
+                            path, e.getMessage());
+                    return chain.filter(withoutUserId(exchange));
+                });
+    }
+
+    /** 写入网关注入的 userId，覆盖外部传入的同名头 */
+    private ServerWebExchange withUserId(ServerWebExchange exchange, Long userId) {
+        ServerHttpRequest mutated = exchange.getRequest().mutate()
+                .headers(h -> h.set(HttpConstants.HEADER_USER_ID, String.valueOf(userId)))
+                .build();
+        return exchange.mutate().request(mutated).build();
+    }
+
+    /** 清掉 X-User-Id，按游客访问 */
+    private ServerWebExchange withoutUserId(ServerWebExchange exchange) {
+        ServerHttpRequest cleaned = exchange.getRequest().mutate()
+                .headers(h -> h.remove(HttpConstants.HEADER_USER_ID))
+                .build();
+        return exchange.mutate().request(cleaned).build();
     }
 
     /** 白名单匹配：Ant 风格，支持 {@code /api/admin/**} 与 {@code /**}{@code /v3/api-docs} 这类写法 */

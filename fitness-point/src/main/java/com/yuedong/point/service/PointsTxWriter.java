@@ -53,6 +53,12 @@ public class PointsTxWriter {
         try {
             pointsLogMapper.insert(logRow);
         } catch (org.springframework.dao.DuplicateKeyException e) {
+            // 历史脏数据的边缘情况：流水已经存在，但打卡明细当时没写成功。
+            // 调用方（CheckinTxWriter）已经把明细补上了，这里至少把连续天数刷新，
+            // 避免用户看到“今天打了卡、连续天数还是旧值”。
+            if ("CHECKIN".equals(bizType)) {
+                memberPointsMapper.updateContinuous(userId, continuousDays);
+            }
             return false;
         }
 

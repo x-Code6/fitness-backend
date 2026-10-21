@@ -5,6 +5,7 @@ import com.yuedong.community.model.entity.Comment;
 import com.yuedong.community.model.vo.ReplyCountRow;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 
 import java.util.List;
 
@@ -34,4 +35,17 @@ public interface CommentMapper extends BaseMapper<Comment> {
             " GROUP BY root_id" +
             "</script>")
     List<ReplyCountRow> selectReplyCounts(@Param("rootIds") List<Long> rootIds);
+
+    /**
+     * 软删评论：只有"作者本人 + 当前还是正常状态"才更新成功。
+     *
+     * <p>★为什么不用 {@code updateById}：MySQL 把 status=0 再写成 0 也算影响 1 行，
+     * 并发双击删除时两次都会返回 1，评论数就会被减两次。带 status=1 条件后，
+     * 只有真正完成状态迁移的那一次返回 1。</p>
+     *
+     * @return 1 本次删除成功；0 已被删过或不是本人
+     */
+    @Update("UPDATE t_post_comment SET status = 0 WHERE id = #{commentId} " +
+            "AND user_id = #{userId} AND status = 1")
+    int softDelete(@Param("commentId") Long commentId, @Param("userId") Long userId);
 }

@@ -7,9 +7,11 @@ import com.rabbitmq.client.Channel;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.time.LocalDateTime;
 
 /**
@@ -29,16 +31,44 @@ public class NotifyEventConsumer {
 
     private final MessageMapper messageMapper;
     private final ObjectMapper objectMapper;
+    /** 通知事件去重：发布方 eventId 是 UUID，重投时保持不变 */
+    private final StringRedisTemplate redis;
 
-    @RabbitListener(queues = RabbitConfig.USER_NOTIFY_QUEUE)
+    /**
+     * ★{@code ackMode = "MANUAL"} 不是可选项：方法体里自己调了 basicAck / basicNack，
+     * 而容器的默认确认模式是 AUTO——Spring 会在方法返回后再 ack 一次，
+     * 第二次 ack 的就是一个已经不存在的 delivery tag，broker 直接
+     * {@code PRECONDITION_FAILED - unknown delivery tag 1} 关掉信道，
+     * 表现是消费者每隔一会儿就"Restarting Consumer"，日志里全是信道错误。
+     * 手动确认就得明确声明手动，两边只能有一方负责 ack。
+     */
+    @RabbitListener(queues = RabbitConfig.USER_NOTIFY_QUEUE, ackMode = "MANUAL")
     public void onMessage(String json, org.springframework.amqp.core.Message amqpMessage, Channel channel) throws IOException {
         long deliveryTag = amqpMessage.getMessageProperties().getDeliveryTag();
+        String idempotentKey = null;
         try {
             var event = objectMapper.readValue(json, java.util.Map.class);
 
-            // ===== 组装并落库（发布方 eventId 保证唯一；重复消费影响仅为多一条同文消息，演示可接受） =====
+            // 发布方 eventId 是 UUID，Rabbit 重投时保持不变。用它做 24h 去重，
+            // 避免重复通知在站内信里出现两条一模一样的。
+            Object eventIdValue = event.get("eventId");
+            Object userIdValue = event.get("userId");
+            if (eventIdValue == null || userIdValue == null) {
+                throw new IllegalArgumentException("通知事件缺少 eventId 或 userId");
+            }
+            String eventId = String.valueOf(eventIdValue);
+            idempotentKey = "idempotent:msg:" + eventId;
+            Boolean first = redis.opsForValue().setIfAbsent(
+                    idempotentKey, "1", Duration.ofHours(24));
+            if (!Boolean.TRUE.equals(first)) {
+                log.info("站内通知重复，跳过: eventId={}", eventId);
+                channel.basicAck(deliveryTag, false);
+                return;
+            }
+
+            // ===== 组装并落库 =====
             Message msg = new Message();
-            msg.setUserId(((Number) event.get("userId")).longValue());
+            msg.setUserId(((Number) userIdValue).longValue());
             msg.setTitle(String.valueOf(event.getOrDefault("title", "通知")));
             msg.setContent(String.valueOf(event.getOrDefault("content", "")));
             msg.setMsgType(String.valueOf(event.getOrDefault("msgType", "BOOKING")));
@@ -49,6 +79,14 @@ public class NotifyEventConsumer {
             channel.basicAck(deliveryTag, false);
             log.debug("站内消息已生成: userId={}, title={}", msg.getUserId(), msg.getTitle());
         } catch (Exception e) {
+            // 落库失败时删掉去重 key，否则人工重投会被误判成重复而直接 ack
+            if (idempotentKey != null) {
+                try {
+                    redis.delete(idempotentKey);
+                } catch (Exception deleteError) {
+                    log.error("站内通知失败后清理幂等 key 失败: key={}", idempotentKey, deleteError);
+                }
+            }
             log.error("站内通知处理失败: {}", json, e);
             channel.basicNack(deliveryTag, false, false);
         }

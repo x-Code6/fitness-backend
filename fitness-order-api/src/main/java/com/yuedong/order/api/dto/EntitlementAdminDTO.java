@@ -1,9 +1,12 @@
 package com.yuedong.order.api.dto;
 
 import com.fasterxml.jackson.annotation.JsonFormat;
+import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 /**
@@ -21,6 +24,8 @@ import java.time.LocalDateTime;
  */
 @Data
 @Builder
+@NoArgsConstructor
+@AllArgsConstructor
 public class EntitlementAdminDTO {
 
     private Long id;
@@ -50,6 +55,16 @@ public class EntitlementAdminDTO {
     private Integer totalTimes;
 
     private Integer usedTimes;
+
+    /** 出票时按份数分摊到的实付金额 */
+    private BigDecimal paidAmount;
+
+    /** 已退款金额；0 = 没退过 */
+    private BigDecimal refundAmount;
+
+    /** 退款时间；null = 没退过 */
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm")
+    private LocalDateTime refundedAt;
 
     /** 剩余次数（UNLIMITED 时前端显示"不限"，这个值只是形式上的） */
     private Integer remainTimes;

@@ -57,6 +57,9 @@ public interface PostMapper extends BaseMapper<Post> {
      * 一期只推荐近 7 天的公开动态，池子小、算得起，业务上也合理（老帖靠"最新"流和作者主页露出）。</p>
      *
      * @param lastScore  上一页最后一条的分数。★首页传 {@link #FIRST_PAGE_SCORE}
+     * @param lastPostId 上一页最后一条的动态 id，用于同分时继续往下翻。
+     *                   ★只按 score 翻页会漏掉所有同分动态：第二页从 "score < 上一页末尾分数"
+     *                   开始，和末尾同分的那些都被跳过。首页传 {@link Long#MAX_VALUE}。
      * @param recentDays 参与推荐的天数窗口
      * @param limit      取几条。<b>★调用方传"页大小 + 1"</b>：
      *                   多取的那一条不返回给前端，只用来判断"还有没有下一页"——
@@ -71,10 +74,12 @@ public interface PostMapper extends BaseMapper<Post> {
             "   WHERE status = 1 AND visibility = 'PUBLIC'" +
             "     AND created_at >= DATE_SUB(NOW(), INTERVAL #{recentDays} DAY)" +
             ") t" +
-            " WHERE t.score < #{lastScore}" +
+            " WHERE (t.score < #{lastScore}" +
+            "        OR (t.score = #{lastScore} AND t.post_id < #{lastPostId}))" +
             " ORDER BY t.score DESC, t.post_id DESC" +
             " LIMIT #{limit}")
     List<PostScoreRow> selectRecommendPage(@Param("lastScore") double lastScore,
+                                           @Param("lastPostId") Long lastPostId,
                                            @Param("recentDays") int recentDays,
                                            @Param("limit") int limit);
 

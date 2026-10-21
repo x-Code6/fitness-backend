@@ -107,9 +107,17 @@ public class Booking {
     @TableField("cancel_reason")
     private String cancelReason;
 
-    /** 1 已发生退款（配合 status=REFUNDED）。★本项目退款是写死的，不调支付网关 */
+    /** 1 已发生退款（可能是部分退款）。★本项目退款是写死的，不调支付网关 */
     @TableField("refunded")
     private Integer refunded;
+
+    /**
+     * 累计已退款金额。
+     * <p>★部分退款时订单仍是 PAID，只有累计退款额达到 {@code pay_amount} 才置 REFUNDED。
+     * 不能再用“任意一张凭证退款就整单 REFUNDED”的旧逻辑——那会让上过课的用户也拿全款。</p>
+     */
+    @TableField("refund_amount")
+    private BigDecimal refundAmount;
 
     @TableField("refund_at")
     private LocalDateTime refundAt;

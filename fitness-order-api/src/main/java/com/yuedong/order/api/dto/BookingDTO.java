@@ -59,6 +59,9 @@ public class BookingDTO {
 
     private BigDecimal payAmount;
 
+    /** 累计已退款金额；0 = 没退过，部分退款时订单仍是 PAID */
+    private BigDecimal refundAmount;
+
     /** 券名快照 */
     private String couponTitle;
 

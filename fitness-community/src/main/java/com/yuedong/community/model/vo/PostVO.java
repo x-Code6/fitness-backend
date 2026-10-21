@@ -28,8 +28,8 @@ public class PostVO {
 
     private String content;
 
-    /** 配图（渐变下标列表；空数组=无图） */
-    private List<Integer> images;
+    /** 配图访问路径列表（如 /uploads/post/xxx.png；空数组=无图） */
+    private List<String> images;
 
     private Integer likes;
 

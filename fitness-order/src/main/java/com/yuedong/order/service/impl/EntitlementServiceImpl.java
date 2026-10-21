@@ -8,21 +8,22 @@ import com.yuedong.common.result.ErrorCode;
 import com.yuedong.course.api.client.CourseClient;
 import com.yuedong.course.api.dto.CourseDTO;
 import com.yuedong.order.api.dto.EntitlementAdminDTO;
-import com.yuedong.order.constant.BookingStatus;
 import com.yuedong.order.constant.EntitlementStatus;
 import com.yuedong.order.constant.OrderConstants;
-import com.yuedong.order.mapper.BookingMapper;
 import com.yuedong.order.mapper.EntitlementMapper;
 import com.yuedong.order.model.entity.Booking;
 import com.yuedong.order.model.entity.Entitlement;
 import com.yuedong.order.model.vo.EntitlementVO;
 import com.yuedong.order.model.vo.ReservationCountRow;
 import com.yuedong.order.mq.NotifyPublisher;
+import com.yuedong.order.service.EntitlementExpireTxWriter;
 import com.yuedong.order.service.EntitlementService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -53,11 +54,12 @@ public class EntitlementServiceImpl implements EntitlementService {
     private static final int EXPIRE_BATCH_SIZE = 200;
 
     private final EntitlementMapper entitlementMapper;
-    private final BookingMapper bookingMapper;
     /** 只为"整页凭证各被约了几次"这一个聚合查询服务，不写任何预约状态 */
     private final com.yuedong.order.mapper.ReservationMapper reservationMapper;
     private final CourseClient courseClient;
     private final NotifyPublisher notifyPublisher;
+    /** 过期 + 按张退款的事务段（单独 Bean 才能让 @Transactional 生效） */
+    private final EntitlementExpireTxWriter entitlementExpireTxWriter;
 
     // =====================================================================
     // 出票
@@ -78,7 +80,16 @@ public class EntitlementServiceImpl implements EntitlementService {
         LocalDateTime payTime = booking.getPayTime() == null ? LocalDateTime.now() : booking.getPayTime();
         LocalDateTime validUntil = resolveValidUntil(booking, payTime);
 
-        // ===== 第 3 步：逐张出票。★多份不合并（D4），买 3 份就是 3 张独立凭证 =====
+        // ===== 第 3 步：把实付金额按份数分摊到每张凭证 =====
+        // 例：买 2 份实付 150 元 → 每张 75 元；除不尽时余数放到最后一张，
+        // 保证 N 张的 paid_amount 之和严格等于订单 pay_amount。
+        // 以后退款按这张凭证的 paid_amount 退，既不会按原价多退，也不会少退一分钱。
+        BigDecimal totalPaid = booking.getPayAmount() == null
+                ? BigDecimal.ZERO : booking.getPayAmount().setScale(2, RoundingMode.HALF_UP);
+        BigDecimal unitPaid = totalPaid.divide(BigDecimal.valueOf(quantity), 2, RoundingMode.DOWN);
+        BigDecimal allocatedPaid = BigDecimal.ZERO;
+
+        // ===== 第 4 步：逐张出票。★多份不合并（D4），买 3 份就是 3 张独立凭证 =====
         List<Entitlement> granted = new ArrayList<>(quantity);
         for (int i = 0; i < quantity; i++) {
             Entitlement entitlement = new Entitlement();
@@ -92,6 +103,18 @@ public class EntitlementServiceImpl implements EntitlementService {
             entitlement.setSaleType(booking.getSaleType());
             entitlement.setTotalTimes(totalTimes);
             entitlement.setUsedTimes(0);
+
+            BigDecimal paidAmount;
+            if (i == quantity - 1) {
+                // 最后一张拿余数：33.33 + 33.33 + 33.34 = 100.00
+                paidAmount = totalPaid.subtract(allocatedPaid);
+            } else {
+                paidAmount = unitPaid;
+                allocatedPaid = allocatedPaid.add(paidAmount);
+            }
+            entitlement.setPaidAmount(paidAmount);
+            entitlement.setRefundAmount(BigDecimal.ZERO);
+
             entitlement.setValidUntil(validUntil);
             // ★全部从 ACTIVE 起步，终态由扣次/过期两条 CAS 推进
             entitlement.setStatus(EntitlementStatus.ACTIVE);
@@ -112,8 +135,8 @@ public class EntitlementServiceImpl implements EntitlementService {
      * <p>★三种类型读三组列，<b>不做"两个都有值就取交集"的隐式规则</b>
      * （t_course_store 的列注释里已经写明理由：隐式规则一定会被误读）。</p>
      *
-     * <p>Feign 失败或课程没配到这家店时返回 null（= 永久），这是<b>故意偏向用户</b>的兜底：
-     * 凭证发不出去比有效期算错严重得多，宁可让用户多能约一段时间，也不能收了钱给一张用不了的课。</p>
+     * <p>★取不到有效期时<b>让支付失败并回滚</b>，不再静默发永久凭证：
+     * 一次跨服务抖动换一张永久卡，是会长期漏钱的兜底。支付保持 UNPAID，用户稍后重试即可。</p>
      */
     private LocalDateTime resolveValidUntil(Booking booking, LocalDateTime payTime) {
         CourseDTO course;
@@ -121,14 +144,14 @@ public class EntitlementServiceImpl implements EntitlementService {
             // 查课程在该门店的第二层时间窗：只读，不产生任何远端写入，失败无需补偿
             course = courseClient.detail(booking.getCourseId(), booking.getStoreId()).getData();
         } catch (Exception e) {
-            log.error("取课程有效期失败，凭证按永久的发: orderNo={}, courseId={}",
+            log.error("取课程有效期失败，支付回滚等待重试: orderNo={}, courseId={}",
                     booking.getOrderNo(), booking.getCourseId(), e);
-            return null;
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "课程有效期获取失败，请稍后重试");
         }
         if (course == null || course.getValidType() == null) {
-            log.warn("课程未配置有效期，凭证按永久的发: orderNo={}, courseId={}, storeId={}",
+            log.warn("课程未配置有效期，支付回滚: orderNo={}, courseId={}, storeId={}",
                     booking.getOrderNo(), booking.getCourseId(), booking.getStoreId());
-            return null;
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "课程有效期配置缺失，请联系门店");
         }
 
         switch (course.getValidType()) {
@@ -138,21 +161,21 @@ public class EntitlementServiceImpl implements EntitlementService {
             // DAYS：自<b>支付时刻</b>起 N 天。★起算点是付款而不是下单，两者可能差 15 分钟
             case "DAYS":
                 if (course.getValidDays() == null || course.getValidDays() < 1) {
-                    log.warn("valid_type=DAYS 但没配 valid_days，按永久的发: courseId={}", booking.getCourseId());
-                    return null;
+                    log.warn("valid_type=DAYS 但没配 valid_days，支付回滚: courseId={}", booking.getCourseId());
+                    throw new BusinessException(ErrorCode.SYSTEM_ERROR, "课程有效期配置不完整，请稍后重试");
                 }
                 return payTime.plusDays(course.getValidDays());
             // RANGE：固定窗口（短期训练营），与付款时刻无关，只看截止
             case "RANGE":
                 if (course.getUseEndTime() == null) {
-                    log.warn("valid_type=RANGE 但没配 use_end_time，按永久的发: courseId={}", booking.getCourseId());
-                    return null;
+                    log.warn("valid_type=RANGE 但没配 use_end_time，支付回滚: courseId={}", booking.getCourseId());
+                    throw new BusinessException(ErrorCode.SYSTEM_ERROR, "课程有效期配置不完整，请稍后重试");
                 }
                 return course.getUseEndTime();
             default:
-                log.warn("未知的 valid_type={}，按永久的发: courseId={}",
+                log.warn("未知的 valid_type={}，支付回滚: courseId={}",
                         course.getValidType(), booking.getCourseId());
-                return null;
+                throw new BusinessException(ErrorCode.SYSTEM_ERROR, "课程有效期配置异常，请联系门店");
         }
     }
 
@@ -169,18 +192,34 @@ public class EntitlementServiceImpl implements EntitlementService {
                 .eq(courseId != null, Entitlement::getCourseId, courseId)
                 .orderByDesc(Entitlement::getId));
 
+        // 一次 GROUP BY 拿全部"已约未上"节数：★不在循环里逐张查，那是 N+1 的老路
+        Map<Long, Integer> pendingMap = pendingCounts(rows.stream().map(Entitlement::getId).toList());
+
         LocalDateTime now = LocalDateTime.now();
         List<EntitlementVO> result = new ArrayList<>(rows.size());
         for (Entitlement row : rows) {
+            int pending = pendingMap.getOrDefault(row.getId(), 0);
             // usableOnly 在内存里过滤而不是加 SQL 条件：
-            // "可用"要判次数与有效期两套 NULL 语义，写进 WHERE 会变成一条谁也读不懂的 SQL，
-            // 而这里的量级（一个人几十张凭证）根本不需要数据库来帮这个筛
-            if (Boolean.TRUE.equals(usableOnly) && !isBookable(row, now)) {
+            // "可用"要判次数、有效期、占用三套语义（前两个还是 NULL 语义），写进 WHERE 会变成
+            // 一条谁也读不懂的 SQL，而这里的量级（一个人几十张凭证）根本不需要数据库来帮这个筛
+            if (Boolean.TRUE.equals(usableOnly) && !row.bookableAt(now, pending)) {
                 continue;
             }
-            result.add(toVO(row));
+            result.add(toVO(row, pending));
         }
         return result;
+    }
+
+    @Override
+    public Map<Long, Integer> pendingCounts(java.util.Collection<Long> entitlementIds) {
+        if (entitlementIds == null || entitlementIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<Long, Integer> counts = new HashMap<>();
+        for (ReservationCountRow row : reservationMapper.countPendingByEntitlements(new ArrayList<>(entitlementIds))) {
+            counts.put(row.getEntitlementId(), row.getReservationCount());
+        }
+        return counts;
     }
 
     @Override
@@ -193,10 +232,16 @@ public class EntitlementServiceImpl implements EntitlementService {
         if (entitlement == null) {
             throw new BusinessException(ErrorCode.ENTITLEMENT_NOT_FOUND);
         }
-        if (!isBookable(entitlement, LocalDateTime.now())) {
-            throw new BusinessException(ErrorCode.ENTITLEMENT_UNUSABLE);
+        int pending = pendingCounts(List.of(entitlementId)).getOrDefault(entitlementId, 0);
+        if (entitlement.bookableAt(LocalDateTime.now(), pending)) {
+            return entitlement;
         }
-        return entitlement;
+        // ★两种"不能约"要分开告诉用户，因为下一步动作完全不同：
+        //   挂着待上的课 → 去上课或取消原预约；次数真用完/过期 → 得重新买
+        if (pending >= 1) {
+            throw new BusinessException(ErrorCode.ENTITLEMENT_PENDING_FULL);
+        }
+        throw new BusinessException(ErrorCode.ENTITLEMENT_UNUSABLE);
     }
 
     @Override
@@ -240,45 +285,47 @@ public class EntitlementServiceImpl implements EntitlementService {
         LocalDateTime now = LocalDateTime.now();
 
         // ===== 第 1 步：圈出过期候选 =====
-        // ★三个条件缺一不可：status 等值（只处理还在用的）、valid_until IS NOT NULL
-        //   （FOREVER 的凭证必须跳过，漏了就是常年课集体误判退款）、范围在后（命中 idx_expire）
-        List<Entitlement> overdue = entitlementMapper.selectList(new LambdaQueryWrapper<Entitlement>()
-                .eq(Entitlement::getStatus, EntitlementStatus.ACTIVE)
-                .isNotNull(Entitlement::getValidUntil)
-                .lt(Entitlement::getValidUntil, now)
-                .last("LIMIT " + EXPIRE_BATCH_SIZE));
+        // 查询里已经带三个条件：status=ACTIVE、valid_until IS NOT NULL、valid_until < now；
+        // 另外还排除了"还有 BOOKED 预约"的凭证，避免课还没上完就先过期退款。
+        // 条件写在 Mapper 里，命中 idx_expire(status, valid_until)。
+        List<Entitlement> overdue = entitlementMapper.selectExpiredWithoutPending(now, EXPIRE_BATCH_SIZE);
         if (overdue.isEmpty()) {
             return 0;
         }
 
         int processed = 0;
         for (Entitlement entitlement : overdue) {
-            // ===== 第 2 步：CAS 置过期。影响 0 行 = 别的实例或上一轮已处理，跳过即可 =====
-            // 改：t_entitlement.status ACTIVE→EXPIRED，带状态条件，重跑安全、多实例安全
-            int rows = entitlementMapper.expireOne(entitlement.getId(), now);
-            if (rows == 0) {
+            // ===== 第 2 步：置过期 + 按张退款，同一个事务 =====
+            // 事务里先 CAS 置 EXPIRED，再按这张凭证的 paid_amount 退款；
+            // 任一步失败整体回滚，下一轮任务还能重新捞到它。
+            EntitlementExpireTxWriter.ExpireResult result =
+                    entitlementExpireTxWriter.expireAndRefund(entitlement, now);
+            if (!result.isExpired()) {
+                // 被别的实例/上一轮处理过了
                 continue;
             }
             processed++;
 
-            // ===== 第 3 步：一次都没用过的，把订单推到退款（D7）=====
-            if (entitlement.getUsedTimes() == null || entitlement.getUsedTimes() == 0) {
-                // 改：t_booking.status PAID→REFUNDED，同样带状态条件；
-                // 已退款/已取消的单影响 0 行，不会重复退
-                int refunded = bookingMapper.markRefunded(entitlement.getOrderNo(), now);
-                if (refunded > 0) {
-                    notifyPublisher.publishBookingNotify(entitlement.getUserId(), "凭证已过期，款项已退回",
-                            "「" + entitlement.getCourseName() + "」的凭证到期时一次都没用过，"
-                                    + "订单 " + entitlement.getOrderNo() + " 已置为已退款。");
-                    log.info("凭证过期且未使用，订单已退款: orderNo={}, entitlementId={}",
-                            entitlement.getOrderNo(), entitlement.getId());
-                }
+            // ===== 第 3 步：按处理结果发通知 =====
+            BigDecimal refundAmount = result.getRefundAmount();
+            if (refundAmount.compareTo(BigDecimal.ZERO) > 0) {
+                notifyPublisher.publishBookingNotify(entitlement.getUserId(), "凭证已过期，已退款",
+                        "「" + entitlement.getCourseName() + "」的凭证已到期，"
+                                + "未使用部分退款 ¥" + refundAmount.setScale(2, RoundingMode.HALF_UP) + "。");
+            } else if (result.getUsedTimes() == 0) {
+                // 0 元凭证（或已经退过）：没有金额可退，只告知过期
+                notifyPublisher.publishBookingNotify(entitlement.getUserId(), "凭证已过期",
+                        "「" + entitlement.getCourseName() + "」的凭证已到期。");
             } else {
-                // 用过一点的：剩余次数不退（D7 明确规则），只把凭证置终态并告知用户
+                // 用过一点的：剩余次数不退（D7 明确规则）
                 notifyPublisher.publishBookingNotify(entitlement.getUserId(), "凭证已过期",
                         "「" + entitlement.getCourseName() + "」的凭证已到期，已用 "
-                                + entitlement.getUsedTimes() + " 次，剩余次数按规则不予退还。");
+                                + result.getUsedTimes() + " 次，剩余次数按规则不予退还。");
             }
+
+            log.info("凭证过期处理完成: entitlementId={}, orderNo={}, 已用={}, 退款={}",
+                    entitlement.getId(), entitlement.getOrderNo(),
+                    result.getUsedTimes(), refundAmount);
         }
 
         if (processed > 0) {
@@ -291,24 +338,15 @@ public class EntitlementServiceImpl implements EntitlementService {
     // 私有工具
     // =====================================================================
 
-    /**
-     * 凭证当下能不能拿去预约 —— <b>规则本身写在实体上</b>
-     * （{@link Entitlement#usableAt}），这里只是给本类的几处调用一个短名。
-     *
-     * <p>★为什么不在这里再抄一遍三个条件：预约创建时要问的是"<b>上课那一刻</b>还有效吗"，
-     * 列表页问的是"现在还能用吗"。两处各写一份判断，迟早会有一份漏掉 NULL 分支，
-     * 而漏掉的后果是"不限次课约不了"或"常年课被当过期"这种线上事故级错误。</p>
-     */
-    private boolean isBookable(Entitlement entitlement, LocalDateTime moment) {
-        return entitlement.usableAt(moment);
-    }
-
-    /** 实体 → C 端 VO（字段名对齐前端 Mock 的 entitlementVO，派生值全部在这里算完） */
+    /** 实体 → C 端 VO（字段名对齐前端 entitlementVO，派生值全部在这里算完） */
     @Override
-    public EntitlementVO toVO(Entitlement entitlement) {
+    public EntitlementVO toVO(Entitlement entitlement, int pendingTimes) {
         boolean unlimited = entitlement.getTotalTimes() == null;
         int used = entitlement.getUsedTimes() == null ? 0 : entitlement.getUsedTimes();
-        Integer remain = unlimited ? null : Math.max(entitlement.getTotalTimes() - used, 0);
+        // ★剩余次数 = 总 - 已上课 - 占用中。少了后两项之一，就会出现
+        //   "页面上还显示可用 1 次，点进去约第三节却被拒"这种自相矛盾的界面
+        Integer remain = unlimited ? null : Math.max(0, entitlement.remainTimes(pendingTimes));
+        boolean bookable = entitlement.bookableAt(LocalDateTime.now(), pendingTimes);
 
         return EntitlementVO.builder()
                 .entitlementId(entitlement.getId())
@@ -321,6 +359,12 @@ public class EntitlementServiceImpl implements EntitlementService {
                 .saleType(entitlement.getSaleType())
                 .totalTimes(entitlement.getTotalTimes())
                 .usedTimes(used)
+                .paidAmount(entitlement.getPaidAmount())
+                .refundAmount(entitlement.getRefundAmount())
+                .refundText(refundText(entitlement))
+                // 占用中：0 就给 null，前端不渲染这一行（"0 节待上课"是一句没用的话）
+                .pendingTimes(pendingTimes == 0 ? null : pendingTimes)
+                .pendingText(pendingTimes == 0 ? null : pendingTimes + " 节待上课，去上完或先取消才能再约")
                 .remainTimes(remain)
                 .unlimited(unlimited)
                 // ★永久有效给 null，不给 9999-12-31 这种魔法值：
@@ -329,11 +373,27 @@ public class EntitlementServiceImpl implements EntitlementService {
                 .validUntilText(formatValidUntil(entitlement.getValidUntil()))
                 .status(entitlement.getStatus())
                 .statusText(EntitlementStatus.textOf(entitlement.getStatus()))
-                .canBook(isBookable(entitlement, LocalDateTime.now()))
+                .canBook(bookable)
                 // 同名课多张凭证靠这一行区分（买两次就有两条"燃脂跳操"），尾号 + 购买日期足够认出来
                 .subTitle("订单尾号 " + tailOf(entitlement.getOrderNo())
                         + " · " + (entitlement.getCreatedAt() == null ? "" : formatDay(entitlement.getCreatedAt()) + " 购买"))
                 .build();
+    }
+
+    /**
+     * 凭证退款文案。
+     * <p>没退过返回 null，前端就不渲染这一行；退过但金额为 0（0 元单）只说"已过期"。</p>
+     */
+    private String refundText(Entitlement entitlement) {
+        if (entitlement.getRefundedAt() == null) {
+            return null;
+        }
+        BigDecimal amount = entitlement.getRefundAmount() == null
+                ? BigDecimal.ZERO : entitlement.getRefundAmount();
+        if (amount.compareTo(BigDecimal.ZERO) <= 0) {
+            return "已过期";
+        }
+        return "已退款 ¥" + amount.setScale(2, RoundingMode.HALF_UP);
     }
 
     /** 有效期文案：null 必须显示"长期有效"，不能显示空串——用户看到空白会以为凭证坏了 */
@@ -419,6 +479,9 @@ public class EntitlementServiceImpl implements EntitlementService {
                 .saleType(entitlement.getSaleType())
                 .totalTimes(entitlement.getTotalTimes())
                 .usedTimes(entitlement.getUsedTimes())
+                .paidAmount(entitlement.getPaidAmount())
+                .refundAmount(entitlement.getRefundAmount())
+                .refundedAt(entitlement.getRefundedAt())
                 .remainTimes(remain)
                 .validUntil(entitlement.getValidUntil())
                 .validUntilText(formatValidUntil(entitlement.getValidUntil()))

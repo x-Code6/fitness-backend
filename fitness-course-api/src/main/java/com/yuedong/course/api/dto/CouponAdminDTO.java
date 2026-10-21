@@ -64,4 +64,19 @@ public class CouponAdminDTO {
     private String description;
 
     private Integer status;
+
+    // ===== 活动页回填 =====
+    private Boolean bannerEnabled;
+
+    private String bannerImageUrl;
+
+    private String bannerTitle;
+
+    private String bannerSubtitle;
+
+    private Integer bannerSort;
+
+    private String bannerStartTime;
+
+    private String bannerEndTime;
 }

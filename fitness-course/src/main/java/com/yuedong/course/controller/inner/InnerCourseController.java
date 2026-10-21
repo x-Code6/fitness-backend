@@ -80,6 +80,15 @@ public class InnerCourseController {
         return Result.ok(seckillActivityService.deductRemain(activityId));
     }
 
+    /**
+     * 订单取消/超时/建单失败时回补 DB 侧份数。
+     * <p>★Redis 是门神、DB 是账本；只回补 Redis 会让 DB 名额永久少卖。</p>
+     */
+    @PostMapping("/seckill/restore")
+    public Result<Boolean> restore(@RequestParam Long activityId) {
+        return Result.ok(seckillActivityService.restoreRemain(activityId));
+    }
+
     /** 手动预热指定活动库存（定时任务 30 秒扫描兜底，此接口便于联调） */
     @PostMapping("/seckill/preheat")
     public Result<Boolean> preheat(@RequestParam Long activityId) {

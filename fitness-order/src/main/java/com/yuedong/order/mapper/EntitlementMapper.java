@@ -3,9 +3,11 @@ package com.yuedong.order.mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.yuedong.order.model.entity.Entitlement;
 import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 /**
  * 凭证表 Mapper。
@@ -55,4 +57,37 @@ public interface EntitlementMapper extends BaseMapper<Entitlement> {
     @Update("UPDATE t_entitlement SET status = 'EXPIRED' " +
             "WHERE id = #{id} AND status = 'ACTIVE' AND valid_until IS NOT NULL AND valid_until < #{now}")
     int expireOne(@Param("id") Long id, @Param("now") LocalDateTime now);
+
+    /**
+     * 标记这张凭证已退款。条件是"已过期、一次都没用过、还没退过"。
+     *
+     * <p>★为什么要 status='EXPIRED'：退款只发生在过期任务里，先由 {@link #expireOne}
+     * 把状态推进到 EXPIRED，再在同一事务里退钱。顺序反过来会出现
+     * "钱退了，凭证还是 ACTIVE，用户还能继续约"。</p>
+     *
+     * <p>★refunded_at IS NULL 是幂等条件：重复扫描/多实例同时跑时只有第一次能退。</p>
+     *
+     * @return 1 本次完成退款标记；0 已退过或条件不满足
+     */
+    @Update("UPDATE t_entitlement SET refund_amount = COALESCE(paid_amount, 0), refunded_at = #{now} " +
+            "WHERE id = #{id} AND status = 'EXPIRED' AND used_times = 0 AND refunded_at IS NULL")
+    int markRefunded(@Param("id") Long id, @Param("now") LocalDateTime now);
+
+    /**
+     * 查"已过期、且当前没有待上预约"的凭证，供过期任务处理。
+     *
+     * <p>★{@code NOT EXISTS} 这一段不能省：如果凭证到期时还有一节 BOOKED 的课
+     * （例如 2 小时的课从到期前 1 小时开始），直接置 EXPIRED 并退款，等下课结算时
+     * {@code consumeOne} 会扣不动，用户既上了课又拿了退款。</p>
+     *
+     * <p>有 BOOKED 的凭证先跳过，等预约结算（下课扣次）或用户取消后再处理；
+     * 下一轮任务会重新捞到它。</p>
+     */
+    @Select("SELECT e.* FROM t_entitlement e " +
+            "WHERE e.status = 'ACTIVE' AND e.valid_until IS NOT NULL AND e.valid_until < #{now} " +
+            "  AND NOT EXISTS (SELECT 1 FROM t_reservation r " +
+            "                  WHERE r.entitlement_id = e.id AND r.status = 'BOOKED') " +
+            "ORDER BY e.valid_until ASC LIMIT #{limit}")
+    List<Entitlement> selectExpiredWithoutPending(@Param("now") LocalDateTime now,
+                                                  @Param("limit") int limit);
 }

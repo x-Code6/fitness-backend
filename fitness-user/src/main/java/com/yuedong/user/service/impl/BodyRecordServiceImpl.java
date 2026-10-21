@@ -28,6 +28,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -190,15 +191,18 @@ public class BodyRecordServiceImpl implements BodyRecordService {
                 Aggregation.match(Criteria.where(field).exists(true).ne(null)),
                 // ③ $project：只留两个字段。趋势图不需要围度、备注这些无关列
                 Aggregation.project("record_date").and(field).as("value"),
-                // ④ 升序：图是从左往右画的，数据库侧排好省得在 Java 里再 sort 一次
-                Aggregation.sort(Sort.Direction.ASC, "record_date"),
+                // ④ 先降序：配合 LIMIT 取"最近 400 条"，而不是最旧的 400 条。
+                //    以前是 ASC + LIMIT，记录超过 400 天时最新数据会被截掉。
+                Aggregation.sort(Sort.Direction.DESC, "record_date"),
                 // ⑤ 最多 400 个点。一天一条时够用两年；防止"全部"这个档位把整段历史拖进内存
                 Aggregation.limit(400)
         );
         AggregationResults<TrendPoint> results =
                 mongoTemplate.aggregate(aggregation, "body_record", TrendPoint.class);
 
-        List<TrendPoint> raw = results.getMappedResults();
+        // 取到的是倒序，反转成升序再算 first/latest 和画图
+        List<TrendPoint> raw = new ArrayList<>(results.getMappedResults());
+        Collections.reverse(raw);
         List<BodyViews.Point> points = new ArrayList<>(raw.size());
         BigDecimal sum = BigDecimal.ZERO;
         BigDecimal max = null;
@@ -236,24 +240,32 @@ public class BodyRecordServiceImpl implements BodyRecordService {
                 .minValue(min)
                 .avgValue(avg)
                 .sampleCount(points.size())
-                // 目标线：目前只有体重设了目标值（档案里的 target_weight），其余指标为 null，前端就不画那条线。
+                // 目标线：只有体重有目标值（档案里的 target_weight）；体脂/腰围等不画目标线。
                 // ★在这里查 MySQL 拿，而不是让前端"再请求一次档案然后自己拼"——
                 //   "图上画哪条线、线标什么文案"是趋势这件事的一部分，就该在这一处算完。
-                .target(targetWeightOf(userId))
-                .targetText(targetWeightText(userId))
+                .target(targetWeightOf(userId, target))
+                .targetText(targetWeightText(userId, target))
                 .emptyText(points.isEmpty()
                         ? "还没有记录过" + target.getLabel() + "，去记一次就能看趋势" : null)
                 .build();
     }
 
-    /** 档案里的目标体重。读不到档案就什么也不画——宁缺毋滥，别拿 0 当默认值 */
-    private BigDecimal targetWeightOf(Long userId) {
+    /**
+     * 档案里的目标体重。
+     * <p>★只有体重指标才返回目标线：体脂、腰围的趋势图画一条 65kg 的“目标”
+     * 会把 Y 轴撑大，而且那个数字对它们没有意义。</p>
+     * <p>读不到档案就什么也不画——宁缺毋滥，别拿 0 当默认值。</p>
+     */
+    private BigDecimal targetWeightOf(Long userId, BodyMetric metric) {
+        if (metric != BodyMetric.WEIGHT) {
+            return null;
+        }
         UserProfile profile = userProfileMapper.selectById(userId);
         return profile == null ? null : profile.getTargetWeight();
     }
 
-    private String targetWeightText(Long userId) {
-        BigDecimal target = targetWeightOf(userId);
+    private String targetWeightText(Long userId, BodyMetric metric) {
+        BigDecimal target = targetWeightOf(userId, metric);
         return target == null ? null : target.stripTrailingZeros().toPlainString() + " kg";
     }
 
@@ -261,10 +273,17 @@ public class BodyRecordServiceImpl implements BodyRecordService {
     // 私有工具
     // =====================================================================
 
-    /** 聚合结果承接类。字段名要和 $project 输出的名字对得上，所以 date 不是文档里的列名 */
+    /**
+     * 聚合结果承接类。字段名要和 $project 输出的名字对得上，所以 date 不是文档里的列名。
+     *
+     * <p>★这里必须是 Spring Data 的 {@code @Field}，不是 Jackson 的 {@code @JsonProperty}：
+     * 承接聚合结果走的是 Mongo→实体的映射器，它只认 {@code @Field}；
+     * 用 Jackson 注解等于没写，$project 出来的 record_date 落不进 date，
+     * 趋势图会拿到一列 null 日期。</p>
+     */
     @lombok.Data
     public static class TrendPoint {
-        @com.fasterxml.jackson.annotation.JsonProperty("record_date")
+        @org.springframework.data.mongodb.core.mapping.Field("record_date")
         private String date;
         private BigDecimal value;
     }

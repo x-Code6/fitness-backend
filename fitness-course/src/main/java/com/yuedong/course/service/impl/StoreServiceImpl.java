@@ -27,6 +27,7 @@ import org.springframework.data.redis.connection.RedisGeoCommands;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.domain.geo.GeoReference;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -293,12 +294,58 @@ public class StoreServiceImpl implements StoreService, ApplicationRunner {
         log.info("管理端保存门店: id={}, name={}, 新增={}", store.getId(), store.getName(), isNew);
     }
 
+    /**
+     * 管理端“删除门店”实际做的是<b>停用</b>（status=0）。
+     *
+     * <p>★为什么不再物理删除：历史订单、凭证、预约里都存了 store_id，
+     * 物理删除会让它们指向一个查不到的门店；而且门店是“有历史引用”的实体，
+     * 下架比删除更符合业务。停用后：</p>
+     * <ul>
+     *   <li>课程可售判断会因 {@code store.status != 1} 返回不可售；</li>
+     *   <li>课程×门店关系同步置 0，避免详情页仍显示“在售”；</li>
+     *   <li>附近门店 GEO 里移除坐标，不再被搜到。</li>
+     * </ul>
+     */
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public void adminDelete(Long id) {
-        storeMapper.deleteById(id);
-        // 从 GEO 里移除该店坐标，否则附近门店会返回一个查不到详情的 id
-        redis.opsForGeo().remove(RedisKeyConstants.STORE_GEO, String.valueOf(id));
-        log.info("管理端删除门店: id={}", id);
+        Store store = storeMapper.selectById(id);
+        if (store == null) {
+            throw new BusinessException(ErrorCode.STORE_NOT_FOUND);
+        }
+        LocalDateTime now = LocalDateTime.now();
+
+        // 改：门店 status=0（停用），保留行给历史订单/预约引用
+        store.setStatus(0);
+        store.setUpdatedAt(now);
+        storeMapper.updateById(store);
+
+        // 改：同步停用这家店的所有课程关系，并清掉对应课程详情缓存。
+        // 只改 store 不改关系的话，课程详情里“这家店在卖”的旧缓存可能还会留 30 分钟。
+        List<CourseStore> relations = courseStoreMapper.selectList(
+                new LambdaQueryWrapper<CourseStore>().eq(CourseStore::getStoreId, id));
+        for (CourseStore relation : relations) {
+            if (relation.getStatus() == null || relation.getStatus() != 0) {
+                relation.setStatus(0);
+                relation.setUpdatedAt(now);
+                courseStoreMapper.updateById(relation);
+            }
+            // 缓存删除失败不能回滚门店停用：记日志，等 30 分钟自然过期
+            try {
+                redis.delete(RedisKeyConstants.courseDetail(relation.getCourseId()));
+            } catch (Exception e) {
+                log.error("门店停用后课程缓存删除失败，等待过期: courseId={}", relation.getCourseId(), e);
+            }
+        }
+
+        // 从 GEO 里移除该店坐标，否则附近门店会返回一个已停用的 id。
+        // GEO 同样只是缓存，失败不应回滚 DB 的停用操作。
+        try {
+            redis.opsForGeo().remove(RedisKeyConstants.STORE_GEO, String.valueOf(id));
+        } catch (Exception e) {
+            log.error("门店已停用，但 GEO 坐标移除失败，等待下次启动重建: storeId={}", id, e);
+        }
+        log.info("管理端停用门店: id={}, 同步停用课程关系 {} 条", id, relations.size());
     }
 
     // =====================================================================

@@ -60,14 +60,40 @@ public interface BookingMapper extends BaseMapper<Booking> {
     int cancelIfUnpaid(@Param("orderNo") String orderNo, @Param("now") LocalDateTime now);
 
     /**
-     * 退款：PAID → REFUNDED，由"凭证过期且一次都没用"的定时任务触发。
-     *
-     * <p>★这里只改状态、不动钱：本项目不接支付网关（明确的产品决定），
-     * 所以"已退款"是一句状态 + 前端展示，不产生任何资金流。</p>
+     * 扫超时未支付订单（延迟消息发送失败时的兜底）。
+     * <p>★只负责查出来，真正的取消仍走 MQ 消费者：
+     * 那里有 CAS + 退券 + 回补秒杀名额，不能在这个任务里复制第二套。</p>
      */
-    @Update("UPDATE t_booking SET status = 'REFUNDED', refunded = 1, refund_at = #{now} " +
+    @Select("SELECT * FROM t_booking WHERE status = 'UNPAID' AND created_at < #{cutoff} " +
+            "ORDER BY id ASC LIMIT #{limit}")
+    List<Booking> selectUnpaidBefore(@Param("cutoff") LocalDateTime cutoff,
+                                     @Param("limit") int limit);
+
+    /**
+     * 累加一笔按张退款。
+     *
+     * <p>★SET 子句的顺序不能换：MySQL 从左到右求值，{@code status} 必须写在
+     * {@code refund_amount = refund_amount + ...} 之前，这样 CASE 里读到的才是"加之前"的累计值。
+     * 反过来的话第二次部分退款就会拿加过的新值再判一次，逻辑会多算一遍。</p>
+     *
+     * <p>★只有累计退款额达到实付额才把订单置 REFUNDED；没达到时订单仍是 PAID，
+     * 表示"部分退款"。这样"买 2 张、用 1 张、另 1 张过期退一半"不会变成整单退款。</p>
+     *
+     * <p>★WHERE 带 status='PAID'：已全额退款/已取消的订单不能再累加退款。
+     * 影响 0 行时说明订单已经是终态（旧逻辑整单退过/已取消），
+     * 调用方只把凭证置过期，不再累加退款，避免任务每小时回滚重试。</p>
+     *
+     * @return 1 订单退款额已累加；0 订单不是 PAID（状态不允许再退）
+     */
+    @Update("UPDATE t_booking SET " +
+            "status = CASE WHEN COALESCE(refund_amount, 0) + #{amount} >= pay_amount " +
+            "              THEN 'REFUNDED' ELSE status END, " +
+            "refund_amount = COALESCE(refund_amount, 0) + #{amount}, " +
+            "refunded = 1, refund_at = #{now} " +
             "WHERE order_no = #{orderNo} AND status = 'PAID'")
-    int markRefunded(@Param("orderNo") String orderNo, @Param("now") LocalDateTime now);
+    int addRefundAmount(@Param("orderNo") String orderNo,
+                        @Param("amount") BigDecimal amount,
+                        @Param("now") LocalDateTime now);
 
     // =====================================================================
     // 看板统计（docs 4.12 之外的管理端只读聚合）
@@ -86,8 +112,12 @@ public interface BookingMapper extends BaseMapper<Booking> {
                             @Param("start") LocalDateTime start,
                             @Param("end") LocalDateTime end);
 
-    /** 累计退款金额（REFUNDED 单的实付合计，没有时间窗：退款口径是"到目前为止"） */
-    @Select("SELECT COALESCE(SUM(pay_amount), 0) FROM t_booking WHERE status = 'REFUNDED'")
+    /**
+     * 累计退款金额。
+     * <p>★必须 SUM(refund_amount) 而不是 SUM(pay_amount)：
+     * 部分退款的订单状态仍是 PAID，按整单实付汇总会把没退的部分也算进去。</p>
+     */
+    @Select("SELECT COALESCE(SUM(refund_amount), 0) FROM t_booking")
     BigDecimal sumRefundedAmount();
 
     /**
@@ -108,12 +138,12 @@ public interface BookingMapper extends BaseMapper<Booking> {
      * <p>按 {@code DATE(created_at)} 分组而不是按小时：趋势图横轴是"天"，
      * 按小时分组要多传一个参数、前端也要多一层格式化，没有收益。</p>
      */
-    @Select("SELECT DATE_FORMAT(created_at, '%m-%d') AS date," +
+    @Select("SELECT DATE_FORMAT(MIN(created_at), '%m-%d') AS date," +
             "       COALESCE(SUM(CASE WHEN status = 'PAID' THEN pay_amount ELSE 0 END), 0) AS amount," +
             "       COUNT(*) AS order_count" +
             "  FROM t_booking" +
             " WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL #{days} DAY)" +
             " GROUP BY DATE(created_at)" +
-            " ORDER BY DATE(created_at)")
+            " ORDER BY MIN(created_at)")
     List<TrendRow> selectTrend(@Param("days") int days);
 }

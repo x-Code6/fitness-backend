@@ -25,5 +25,8 @@ public class ProfileVO {
     /** 头像配色下标（前端按此取渐变色） */
     private String avatarColor;
 
+    /** 头像图片访问路径；为空时前端回退到 avatarColor 渐变 */
+    private String avatarImage;
+
     private LocalDateTime createdAt;
 }

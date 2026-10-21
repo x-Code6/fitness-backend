@@ -9,10 +9,12 @@ import com.yuedong.common.model.PageDTO;
 import com.yuedong.common.result.ErrorCode;
 import com.yuedong.common.result.Result;
 import com.yuedong.point.mapper.CheckinRecordMapper;
+import com.yuedong.point.mapper.PointsLogMapper;
 import com.yuedong.point.mapper.RankArchiveMapper;
 import com.yuedong.point.model.entity.CheckinRecord;
 import com.yuedong.point.model.entity.RankArchive;
 import com.yuedong.point.model.vo.RankItemVO;
+import com.yuedong.point.model.vo.RankScoreRow;
 import com.yuedong.point.service.RankService;
 import com.yuedong.user.api.client.UserClient;
 import com.yuedong.user.api.dto.BatchUserQueryDTO;
@@ -25,6 +27,7 @@ import org.springframework.stereotype.Service;
 
 import java.time.Duration;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -58,6 +61,8 @@ public class RankServiceImpl implements RankService {
     private final UserClient userClient;
     private final RankArchiveMapper rankArchiveMapper;
     private final CheckinRecordMapper checkinRecordMapper;
+    /** 归档从积分流水重算，Redis 被清也能恢复历史榜 */
+    private final PointsLogMapper pointsLogMapper;
 
     @Override
     public List<RankItemVO> monthly(Long userId) {
@@ -99,7 +104,8 @@ public class RankServiceImpl implements RankService {
             }
         }
         if (list.isEmpty()) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "榜单暂时为空");
+            // 月初还没人得分是正常状态，不是系统错误；给空列表让前端显示空榜文案
+            log.info("当前月榜为空，返回空列表");
         }
         return list;
     }
@@ -144,40 +150,42 @@ public class RankServiceImpl implements RankService {
     public int archiveLastMonth() {
         LocalDate lastMonth = LocalDate.now().withDayOfMonth(1).minusMonths(1);
         String season = lastMonth.format(MONTH_FMT);
-        String key = RedisKeyConstants.rankMonth(season);
+        LocalDateTime startTime = lastMonth.withDayOfMonth(1).atStartOfDay();
+        LocalDateTime endTime = startTime.plusMonths(1);
 
-        Set<ZSetOperations.TypedTuple<String>> tuples =
-                redis.opsForZSet().reverseRangeWithScores(key, 0, ARCHIVE_TOP_N - 1);
-        if (tuples == null || tuples.isEmpty()) {
-            // 那个月的位图/榜单已经不在 Redis 里（被清过或从未产生）。★不抛错：
-            // 归档任务对"这个月本来就没人打卡"的正常情况不该报警，日志留一行就够
-            log.info("月榜归档跳过：{} 无可归档数据", season);
+        // ===== 第 1 步：从积分流水重算本月得分 =====
+        // ★不再读 Redis ZSet：ZSet 是实时榜缓存，Redis 被清或某次 ZINCRBY 失败，
+        //   归档就会永久少分；流水是账本，随时可以重算。
+        List<RankScoreRow> scores = pointsLogMapper.selectMonthlyPositiveScores(
+                startTime, endTime, (int) ARCHIVE_TOP_N);
+        if (scores.isEmpty()) {
+            log.info("月榜归档跳过：{} 的积分流水为空", season);
             return 0;
         }
 
-        // ===== 第 1 步：该月的打卡明细一次查出，用来补"打卡天数"和"最长连续" =====
+        // ===== 第 2 步：补该月打卡天数与最长连续 =====
         Map<Long, int[]> checkinStats = loadMonthCheckinStats(lastMonth);
 
-        List<RankArchive> rows = new ArrayList<>();
+        List<RankArchive> rows = new ArrayList<>(scores.size());
         int rank = 1;
-        for (ZSetOperations.TypedTuple<String> tuple : tuples) {
-            Long uid = Long.valueOf(tuple.getValue());
-            int[] stats = checkinStats.getOrDefault(uid, new int[]{0, 0});
+        for (RankScoreRow score : scores) {
+            int[] stats = checkinStats.getOrDefault(score.getUserId(), new int[]{0, 0});
             RankArchive row = new RankArchive();
             row.setSeason(season);
-            row.setUserId(uid);
-            row.setScore(tuple.getScore() == null ? 0 : tuple.getScore().intValue());
+            row.setUserId(score.getUserId());
+            row.setScore(score.getScore() == null ? 0 : score.getScore());
             row.setRankNo(rank++);
             row.setTotalCheckin(stats[0]);
             row.setContinuousBest(stats[1]);
             rows.add(row);
         }
+
+        // ===== 第 3 步：upsert，重跑安全 =====
         rankArchiveMapper.upsertBatch(rows);
 
-        // ===== 第 2 步：归档完了才给那个月的实时榜 key 设 TTL =====
-        // ★顺序不能反：先设 TTL 再归档，万一归档失败，那个月的榜就随 key 一起没了
-        redis.expire(key, ARCHIVED_KEY_TTL);
-        log.info("月榜归档完成: season={}, 人数={}, key {} 天后过期", season, rows.size(), ARCHIVED_KEY_TTL.toDays());
+        // 旧 ZSet 留给实时榜页面看，40 天后自然过期；不存在也不影响归档
+        redis.expire(RedisKeyConstants.rankMonth(season), ARCHIVED_KEY_TTL);
+        log.info("月榜归档完成: season={}, 人数={}", season, rows.size());
         return rows.size();
     }
 

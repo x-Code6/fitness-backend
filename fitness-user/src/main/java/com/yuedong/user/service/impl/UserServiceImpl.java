@@ -198,22 +198,40 @@ public class UserServiceImpl implements UserService {
     }
 
     @Override
-    public ProfileVO updateNickname(Long userId, String nickname) {
+    public ProfileVO updateProfile(Long userId, String nickname, String avatarImage) {
         // ===== 第 1 步：确认用户存在 =====
         User user = userMapper.selectById(userId);
         if (user == null) {
             throw new BusinessException(ErrorCode.USER_NOT_FOUND);
         }
 
-        // ===== 第 2 步：只更新昵称字段（updateById 按"非 null 字段"拼 SET 子句） =====
+        // ===== 第 2 步："传了才改" =====
+        // updateById 按"非 null 字段"拼 SET 子句，所以只给想改的字段赋值即可。
+        // 昵称传了空串要拒绝：@Size 放过了 ""，但空昵称在列表里就是一片空白
         User patch = new User();
         patch.setId(userId);
-        patch.setNickname(nickname);
+        if (nickname != null) {
+            if (nickname.isBlank()) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "昵称不能为空");
+            }
+            patch.setNickname(nickname.trim());
+        }
+        if (avatarImage != null) {
+            patch.setAvatarImage(avatarImage.trim());
+        }
+        if (patch.getNickname() == null && patch.getAvatarImage() == null) {
+            return toProfileVO(user);
+        }
         patch.setUpdatedAt(LocalDateTime.now());
         userMapper.updateById(patch);
 
-        // ===== 第 3 步：返回最新资料 =====
-        user.setNickname(nickname);
+        // ===== 第 3 步：把改动合进内存对象再返回，避免多查一次库 =====
+        if (patch.getNickname() != null) {
+            user.setNickname(patch.getNickname());
+        }
+        if (patch.getAvatarImage() != null) {
+            user.setAvatarImage(patch.getAvatarImage());
+        }
         return toProfileVO(user);
     }
 
@@ -228,6 +246,7 @@ public class UserServiceImpl implements UserService {
                         .id(u.getId())
                         .nickname(u.getNickname())
                         .avatarColor(u.getAvatarColor())
+                        .avatarImage(u.getAvatarImage())
                         .build())
                 .toList();
     }
@@ -291,6 +310,7 @@ public class UserServiceImpl implements UserService {
                 .phone(mask(user.getPhone()))
                 .nickname(user.getNickname())
                 .avatarColor(user.getAvatarColor())
+                .avatarImage(user.getAvatarImage())
                 .createdAt(user.getCreatedAt())
                 .build();
     }

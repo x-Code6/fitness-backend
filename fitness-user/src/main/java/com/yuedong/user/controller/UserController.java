@@ -3,11 +3,10 @@ package com.yuedong.user.controller;
 import com.yuedong.common.result.Result;
 import com.yuedong.common.util.UserContext;
 import com.yuedong.user.model.dto.RegisterDTO;
+import com.yuedong.user.model.dto.UserUpdateDTO;
 import com.yuedong.user.service.UserService;
 import com.yuedong.user.model.vo.ProfileVO;
 import jakarta.validation.Valid;
-import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.Size;
 import lombok.RequiredArgsConstructor;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -15,7 +14,6 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -54,15 +52,13 @@ public class UserController {
     }
 
     /**
-     * 修改昵称（用 @RequestParam 接收演示另一种参数形态： PUT + 查询参数）。
+     * 修改个人资料：昵称 / 头像，传哪个改哪个。
      *
-     * @param nickname 新昵称（直接在参数上加校验注解，需配合 @Validated 生效）
-     * @return 更新后的资料
+     * <p>头像走上传接口拿到路径后再调这里保存，图片本体不经过本接口。</p>
      */
     @PutMapping("/profile")
-    public Result<ProfileVO> updateNickname(@RequestParam @NotBlank(message = "昵称不能为空")
-                                            @Size(max = 20, message = "昵称最长 20 个字符")
-                                            String nickname) {
-        return Result.ok(userService.updateNickname(UserContext.getUserId(), nickname));
+    public Result<ProfileVO> updateProfile(@Valid @RequestBody UserUpdateDTO dto) {
+        return Result.ok(userService.updateProfile(
+                UserContext.getUserId(), dto.getNickname(), dto.getAvatarImage()));
     }
 }

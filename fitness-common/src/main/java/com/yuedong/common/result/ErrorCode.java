@@ -23,6 +23,7 @@ public enum ErrorCode {
     UNAUTHORIZED(40100, "尚未登录"),
     TOKEN_INVALID(40101, "登录已过期，请重新登录"),
     FORBIDDEN(40300, "无权访问该资源"),
+    NOT_FOUND(40400, "请求的接口不存在"),
     SYSTEM_ERROR(50000, "系统繁忙，请稍后重试"),
 
     // ---------- 用户服务（41000 ~ 41999） ----------
@@ -57,6 +58,9 @@ public enum ErrorCode {
     ENTITLEMENT_NOT_FOUND(43004, "凭证不存在"),
     ENTITLEMENT_UNUSABLE(43005, "该凭证已用完或已过期，请换一张或重新购买"),
     ENTITLEMENT_TIME_CONFLICT(43006, "凭证有效期与你选择的上课时间不匹配"),
+    // ★"还有一节没上完"和"次数用完"是两件事，必须两个码两句提示：
+    //   前者用户去做完那节课就还能约，后者要重新购买，混在一起用户会以为凭证被吞了
+    ENTITLEMENT_PENDING_FULL(43007, "这张凭证还有一节课没上完，请先去上课或取消原预约"),
     // 预约轴（t_reservation）与时段格子（t_coach_busy）
     RESERVATION_NOT_FOUND(43007, "预约记录不存在"),
     RESERVATION_STATUS_ERROR(43008, "该预约已取消或已完成，无法重复操作"),
@@ -66,7 +70,7 @@ public enum ErrorCode {
     SLOT_TIME_INVALID(43012, "上课时间不合法（须整点且在营业与教练可约区间内）"),
     // 43013~43015 原为购物车（CART_*），2026-10-17 随 D12 撤项删空。
     // 43013 这里重新启用给下单令牌，编号不空转；43014/43015 留空，避免和旧文档对不上。
-    ORDER_TOKEN_INVALID(43013, "页面已过期或已提交过，请刷新后再试"),
+    ORDER_TOKEN_INVALID(43013, "这一单已经提交过了，请退出后重新进入"),
     // 评价（t_rating）
     RATING_ORDER_UNQUALIFIED(43016, "该订单还不能评价（未支付或还有凭证未使用完）"),
     RATING_DUPLICATE(43017, "本单已评价过，如需修改请联系客服"),

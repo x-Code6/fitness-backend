@@ -12,7 +12,14 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * 建单的事务段：写订单 + 核销优惠券，<b>要么都成、要么都不成</b>。
+ * 建单的事务段：写订单 + 核销优惠券，<b>本地订单与券核销同成败</b>。
+ *
+ * <p>★说清楚"同成败"的边界：订单在本地库，券在课程库，两个库没有分布式事务。
+ * 这里能做的是把本地 insert 与 Feign 核销放在同一个调用窗口里：
+ * 核销返回失败 → 抛异常 → 本地 insert 回滚；但如果课程侧已经核销成功、
+ * 本地事务在提交时失败（或 Feign 超时但远端已提交），本地回滚不会把券退回来。
+ * 这个窗口由调用方 {@code BookingServiceImpl.create} 的 catch 按 orderNo 补偿退券。
+ * <b>不是"绝对原子"，而是"本地原子 + 远端可补偿"</b>，这是本项目选择的同步补偿方案。</p>
  *
  * <p>★为什么要单独拎一个类出来，而不是在 {@code BookingServiceImpl.create} 上直接标
  * {@code @Transactional}：Spring 的事务是靠代理实现的，

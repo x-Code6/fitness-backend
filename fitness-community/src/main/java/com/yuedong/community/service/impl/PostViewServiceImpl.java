@@ -16,6 +16,7 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * 浏览量实现：Redis 存增量、DB 存账本、Kafka 存明细。
@@ -39,6 +40,10 @@ public class PostViewServiceImpl implements PostViewService {
      * 只给 25 小时会让边界时刻的浏览"今天永远计不上"。多留两天只是多占两天内存。
      */
     private static final Duration DEDUPE_TTL = Duration.ofDays(3);
+
+    /** 刷库互斥锁：多实例部署时只让一个实例扣 Redis 增量。55 秒 > 任务 30 秒间隔 */
+    private static final String FLUSH_LOCK_KEY = "lock:postview:flush";
+    private static final Duration FLUSH_LOCK_TTL = Duration.ofSeconds(55);
 
     private final StringRedisTemplate redis;
     private final PostMapper postMapper;
@@ -101,33 +106,56 @@ public class PostViewServiceImpl implements PostViewService {
 
     @Override
     public int flushToDb() {
-        // ===== 第 1 步：取快照。entries 读的是这一瞬间的全量 field，读完之后只会变大不会变小 =====
-        Map<Object, Object> snapshot = redis.opsForHash().entries(RedisKeyConstants.POST_VIEW_DELTA);
-        if (snapshot.isEmpty()) {
+        // ===== 第 0 步：多实例互斥 =====
+        // 没有锁时两个实例会读到同一份 Hash 快照，各自 -delta 再写库，浏览数翻倍。
+        // 锁是"尽力而为"：TTL 55 秒，任务 fixedDelay 30 秒；极长任务仍可能重叠，但概率很低。
+        String lockToken = UUID.randomUUID().toString();
+        Boolean locked = redis.opsForValue().setIfAbsent(FLUSH_LOCK_KEY, lockToken, FLUSH_LOCK_TTL);
+        if (!Boolean.TRUE.equals(locked)) {
+            log.info("浏览量刷库任务已被其他实例持有，本轮跳过");
             return 0;
         }
 
-        int flushed = 0;
-        for (Map.Entry<Object, Object> entry : snapshot.entrySet()) {
-            String field = String.valueOf(entry.getKey());
-            int delta = parseInt(entry.getValue());
-            if (delta <= 0) {
-                continue;
+        try {
+            // ===== 第 1 步：取快照。entries 读的是这一瞬间的全量 field，读完之后只会变大不会变小 =====
+            Map<Object, Object> snapshot = redis.opsForHash().entries(RedisKeyConstants.POST_VIEW_DELTA);
+            if (snapshot.isEmpty()) {
+                return 0;
             }
 
-            // ===== 第 2 步：★用 HINCRBY -delta 原子取出，不用 GET→DEL =====
-            // "先读、写库、再删"中间新产生的浏览会被 DEL 掉，永久少计；
-            // 减掉自己读到的那一份，读完之后新加的自然留在 Hash 里等下一轮。
-            // 只有本机会跑这个任务（@Scheduled 单线程），不会有两个实例同时减，
-            // 所以值不会被减成负数。
-            redis.opsForHash().increment(RedisKeyConstants.POST_VIEW_DELTA, field, -delta);
+            int flushed = 0;
+            for (Map.Entry<Object, Object> entry : snapshot.entrySet()) {
+                String field = String.valueOf(entry.getKey());
+                int delta = parseInt(entry.getValue());
+                if (delta <= 0) {
+                    continue;
+                }
 
-            // ===== 第 3 步：★入账必须是 view_count + delta，不能 = delta，也不能 = Redis 的值 =====
-            // 前者会把上一轮已落库的量覆盖掉，后者会被重复刷入。
-            postMapper.addViewCount(Long.valueOf(field), delta);
-            flushed++;
+                // ===== 第 2 步：用 HINCRBY -delta 原子取出，不用 GET→DEL =====
+                // 减掉自己读到的那一份，读完之后新加的自然留在 Hash 里等下一轮。
+                redis.opsForHash().increment(RedisKeyConstants.POST_VIEW_DELTA, field, -delta);
+
+                try {
+                    // ===== 第 3 步：入账必须是 view_count + delta，不能 = delta，也不能 = Redis 的值 =====
+                    postMapper.addViewCount(Long.valueOf(field), delta);
+                    flushed++;
+                } catch (Exception e) {
+                    // ★DB 失败把 delta 加回去：以前先减 Redis 再写库，写库失败这部分浏览就永久丢了。
+                    redis.opsForHash().increment(RedisKeyConstants.POST_VIEW_DELTA, field, delta);
+                    throw e;
+                }
+            }
+            return flushed;
+        } finally {
+            // 只释放自己的锁：token 不匹配说明锁已过期并被别的实例拿到，不能删别人的
+            try {
+                if (lockToken.equals(redis.opsForValue().get(FLUSH_LOCK_KEY))) {
+                    redis.delete(FLUSH_LOCK_KEY);
+                }
+            } catch (Exception e) {
+                log.warn("释放浏览量刷库锁失败，等待 TTL 自动过期: {}", e.getMessage());
+            }
         }
-        return flushed;
     }
 
     /** Redis 里的值可能是 null（没浏览过）或非法字符串（脏数据），统一按 0 处理 */

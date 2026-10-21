@@ -33,10 +33,17 @@ import java.time.LocalDateTime;
  * 有了这条索引，第二个请求抛 DuplicateKeyException，服务层把它翻译成"更新今天那份"，
  * 和项目里所有 CAS 防护是同一个思路——<b>让数据库兜底，不靠代码自觉</b>。
  *
- * 只建这一条，不建 (userId, recordDate:-1) 那种降序索引：Mongo 的单字段/复合索引
+ * ★def 里写的是<b>数据库字段名</b>（record_date），不是 Java 属性名（recordDate）。
+ * Spring Data 建索引时<b>不会</b>替你把属性名换成 @Field 的名字——写属性名的话
+ * 建出来的是"按一个文档里根本不存在的字段排"的索引：所有文档在该列上都是 null，
+ * 于第二个用户之外的任何一天都撞唯一键（E11000），完全不拦重复。
+ * 现在这台库上看不出来，是因为种子脚本先建了同名且键正确的 uk_user_date，
+ * 而 Spring Data 建索引按<b>名字</b>幂等跳过——错误被同名索引挡住了，换个新库就暴露。
+ *
+ * 只建这一条，不建 (userId, record_date:-1) 那种降序索引：Mongo 的单字段/复合索引
  * 正序倒序都能反向扫，加第二条纯粹是每次写多维护一份。索引不是越多越好，这条要记住。
  */
-@CompoundIndex(name = "uk_user_date", def = "{'userId': 1, 'recordDate': 1}", unique = true)
+@CompoundIndex(name = "uk_user_date", def = "{'userId': 1, 'record_date': 1}", unique = true)
 public class BodyRecord {
 
     /**

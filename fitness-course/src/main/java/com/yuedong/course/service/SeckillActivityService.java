@@ -21,6 +21,12 @@ public interface SeckillActivityService {
     /** 内部接口：秒杀建单成功后扣减 DB 库存（Redis 是第一现场，DB 最终一致） */
     boolean deductRemain(Long activityId);
 
+    /**
+     * 内部接口：订单取消/超时/建单失败时回补 DB 库存。
+     * <p>★Redis 和 DB 两个账本都要回补；只回补 Redis 会让 DB 名额永久少卖。</p>
+     */
+    boolean restoreRemain(Long activityId);
+
     /** 内部接口：活动开始前把 DB 库存预热进 Redis（Lua 扣减的初始值） */
     boolean preheat(Long activityId);
 

@@ -100,6 +100,18 @@ spring:
           filters:
             - StripPrefix=1
 
+        # 文件服务（图片上传 + 静态图片读取）。
+        # ★路由必须排在通配/同前缀路由之前：Gateway 按声明顺序取第一条命中的路由。
+        # ★认证分工：/api/file/admin/** 在下面白名单放行，由 fitness-file 自己验管理端 JWT
+        #   （管理端 token 是另一套密钥，网关验不了）；/api/file/user/** 不进白名单，
+        #   走网关的用户 JWT，验签后把 userId 覆盖写进 X-User-Id 透传给文件服务。
+        - id: file
+          uri: lb://fitness-file
+          predicates:
+            - Path=/api/file/**
+          filters:
+            - StripPrefix=1
+
         - id: admin
           uri: lb://fitness-admin-server
           predicates:
@@ -107,13 +119,13 @@ spring:
           filters:
             - StripPrefix=1
 
-        # 上传的图片（D19）。文件落在 admin-server 的磁盘上，读口也在那边，
-        # 所以这一条路由指向同一个服务，只是路径不带 /api/admin 前缀。
-        # ★为什么要单独一条而不是把 /uploads 塞进 /api/admin/** 底下：
-        #   浏览器 <img> 请求不会带管理端 JWT，混在 /api/admin 里就必须让拦截器再排除一次，
+        # 上传的图片（D19）。文件落盘与读口都已迁到 fitness-file（原 admin-server），
+        # 所以这一条路由也跟着指向新服务，只是路径不带 /api/file 前缀。
+        # ★为什么要单独一条而不是把 /uploads 塞进 /api/file/** 底下：
+        #   浏览器 <img> 请求不会带任何 JWT，混在 /api/file 里就必须再排除一次，
         #   而"排除"这件事写在网关白名单里比写在业务服务的拦截器里更容易被看见
         - id: uploads
-          uri: lb://fitness-admin-server
+          uri: lb://fitness-file
           predicates:
             - Path=/api/uploads/**
           filters:
@@ -148,6 +160,8 @@ auth:
     # ---- 游客可浏览的只读接口 ----
     - /api/course/list
     - /api/course/detail
+    # Banner 是首页/活动页的公开素材位，登录前也要能展示
+    - /api/course/banner/list
     - /api/seckill/list
     - /api/store/nearby
     - /api/video/list
@@ -167,19 +181,34 @@ auth:
     - /api/community/comments
     - /api/community/replies
 
-    # ---- 管理端：admin-server 自己有验证码 + JWT，网关这里只放行它的登录链路 ----
-    # 只列这两个，是因为 AuthAdminController 实际只有 /captcha 与 /login 两个方法
-    # （菜单数据在登录响应里一起返回，不是独立接口）。
-    # 不要写"以后可能会有"的路径——白名单里多一条匹配不上的条目，
-    # 就是给未来的自己埋一个"以为放行了其实没放行"的排查坑。
-    - /api/admin/auth/login
-    - /api/admin/auth/captcha
+    # ---- 管理端：整个 /api/admin/** 都在网关放行，认证交给 admin-server 自己做 ----
+    # ★为什么要整段放行，而不是只放 login/captcha：
+    #   网关这一层的验签用的是<b>用户端密钥</b>，而管理端 JWT 是 admin-server 用自己的密钥签的，
+    #   两套密钥不通用。以前只把 login/captcha 加进白名单，结果登录成功拿到 token 之后，
+    #   下一个 /api/admin/dashboard/summary 仍然走用户端校验 → 验签失败 → 401 登录已过期。
+    #   症状就是"管理端登录完立刻被弹回登录页，整个后台一个接口都调不动"。
+    # ★放行不等于不管：AdminAuthInterceptor 挂在 admin-server 的 /** 上，
+    #   只排除 /admin/auth/captcha、/admin/auth/login；/uploads/** 与 /file/admin/**
+    #   已不归 admin-server 管，分别由 fitness-file 的静态资源处理器与 AdminJwtVerifier 负责。
+    #   其余每个请求都要带着管理端 JWT 才能进；角色权限由 @RequireRole 再判一层。
+    #   也就是说管理端的鉴权点都在<b>服务内</b>（admin-server 与 fitness-file），
+    #   不在网关——这是有意的：密钥分两套却在网关做两套校验，
+    #   只会让网关同时依赖两个密钥、两个 Redis key 空间。
+    - /api/admin/**
 
     # ---- 上传的图片：<img> 请求不会带任何凭证，必须匿名可读 ----
-    # ★这里放行的是"读一张已存在的图片"，写口（/api/admin/upload/image）仍然要管理端 JWT。
+    # ★这里放行的是"读一张已存在的图片"，写口（/api/file/admin/upload/image 与
+    #   /api/file/user/upload/image）仍然分别要管理端 JWT、用户 JWT。
     #   只读口匿名是有意为之，代价是"知道路径的人都能看图"——所以文件名必须用 UUID
     #   （不可猜），且库里存的是相对路径而不是用户可控的原始名。
     - /api/uploads/**
+
+    # ---- 文件服务：管理端上传/文件分页 ----
+    # ★只放行 admin 段：管理端 JWT 是 admin-server 用另一套密钥签的，网关验不了，
+    #   所以由 fitness-file 的 AdminJwtVerifier 验签。放行不等于不设防。
+    # ★/api/file/user/** 刻意不放进白名单：用户 JWT 走网关统一校验，
+    #   验签后网关注入 X-User-Id，文件服务只信任该头。
+    - /api/file/admin/**
 
     # ---- 接口文档 ----
     - /**/v3/api-docs
@@ -196,5 +225,13 @@ jwt:
   expire-minutes: 43200         # 30 天。有白名单后这个值只决定"多久要重新登录一次"
 
 logging:
+  # ★联调期把日志同时写文件（网关这份尤其有用：转发到哪、令牌校验为什么失败都在里面）。
+  #   IDEA 控制台的内容滚过去就找不回来，写文件后才能直接 grep。已加进 .gitignore。
+  file:
+    name: logs/${spring.application.name}.log
+  logback:
+    rollingpolicy:
+      max-file-size: 20MB
+      max-history: 3
   level:
     com.yuedong: debug

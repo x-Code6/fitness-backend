@@ -43,9 +43,13 @@ public class User {
     @TableField("nickname")
     private String nickname;
 
-    /** 头像配色下标（前端渐变色盘 0~5） */
+    /** 头像配色下标（前端渐变色盘 0~5）；没上传头像时前端用它画渐变 */
     @TableField("avatar_color")
     private String avatarColor;
+
+    /** 头像图片访问路径（/uploads/avatar/xxx.png），空表示用渐变色块 */
+    @TableField("avatar_image")
+    private String avatarImage;
 
     /** 状态：1 正常 / 0 禁用 */
     @TableField("status")

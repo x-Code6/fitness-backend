@@ -38,13 +38,14 @@ public interface UserService {
     ProfileVO getProfile(Long userId);
 
     /**
-     * 修改昵称。
+     * 修改个人资料（昵称 / 头像）。空字段保持原样。
      *
-     * @param userId   当前用户 id
-     * @param nickname 新昵称
+     * @param userId     当前用户 id
+     * @param nickname   新昵称，null 表示不改
+     * @param avatarImage 新头像路径，null 表示不改
      * @return 更新后的资料
      */
-    ProfileVO updateNickname(Long userId, String nickname);
+    ProfileVO updateProfile(Long userId, String nickname, String avatarImage);
 
     /**
      * 内部接口：按 id 批量查用户简况（排行榜/Feed 展示昵称用）。

@@ -18,4 +18,7 @@ public class GiftVO {
     private Integer pointsCost;
 
     private Integer stock;
+
+    /** 商品图访问路径；为空时前端用积分图标兜底 */
+    private String image;
 }

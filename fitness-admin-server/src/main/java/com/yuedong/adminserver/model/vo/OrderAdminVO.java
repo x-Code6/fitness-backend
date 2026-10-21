@@ -58,6 +58,9 @@ public class OrderAdminVO {
     /** 实付金额 */
     private BigDecimal payAmount;
 
+    /** 累计已退款金额；0 = 没退过，部分退款时订单仍是 PAID */
+    private BigDecimal refundAmount;
+
     /** 使用的券名；null = 没用券 */
     private String couponTitle;
 

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.Builder;
 import lombok.Data;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -50,6 +51,16 @@ public class EntitlementAdminVO {
     private Integer totalTimes;
 
     private Integer usedTimes;
+
+    /** 出票时按份数分摊到的实付金额 */
+    private BigDecimal paidAmount;
+
+    /** 已退款金额；0 = 没退过 */
+    private BigDecimal refundAmount;
+
+    /** 退款时间；null = 没退过 */
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm")
+    private LocalDateTime refundedAt;
 
     /** 剩余次数；UNLIMITED 形态为 null（显示"不限"） */
     private Integer remainTimes;

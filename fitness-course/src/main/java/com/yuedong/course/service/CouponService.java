@@ -68,8 +68,11 @@ public interface CouponService {
     /** 内部接口：核销用券（UNUSED → USED，绑定订单号，CAS） */
     boolean use(Long recordId, Long userId, String orderNo);
 
-    /** 内部接口：订单取消/超时后退券（USED → UNUSED）。★已使用的券过期不退 */
-    boolean refund(Long recordId);
+    /**
+     * 内部接口：订单取消/超时后退券（USED → UNUSED）。
+     * <p>★必须带订单号：只按 recordId 退，会把这张券在别的订单上的使用也退掉。</p>
+     */
+    boolean refund(Long recordId, String orderNo);
 
     /** 管理端：券分页（含 scope 明细，一次 IN 批量取，不逐条查） */
     PageDTO<CouponAdminDTO> adminPage(Integer page, Integer size);

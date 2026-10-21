@@ -58,7 +58,11 @@ public interface CouponClient {
                                              @RequestParam("storeId") Long storeId,
                                              @RequestParam("amount") BigDecimal amount);
 
-    /** 退券（订单取消/超时回退为未使用） */
+    /**
+     * 退券（订单取消/超时回退为未使用）。
+     * <p>★带 orderNo：只有"这张券确实绑定在这张订单上"才退，防止跨单误退。</p>
+     */
     @PostMapping("/inner/coupon/refund")
-    Result<Boolean> refund(@RequestParam("recordId") Long recordId);
+    Result<Boolean> refund(@RequestParam("recordId") Long recordId,
+                           @RequestParam("orderNo") String orderNo);
 }

@@ -88,4 +88,23 @@ public interface ReservationMapper extends BaseMapper<Reservation> {
             " GROUP BY entitlement_id" +
             "</script>")
     List<ReservationCountRow> countByEntitlements(@Param("entitlementIds") List<Long> entitlementIds);
+
+    /**
+     * 每张凭证<b>当前挂着几节待上的课</b>（status = 'BOOKED'）。
+     *
+     * <p>★这就是"已预约但还没扣次"的那部分占用，凭证可用次数必须减去它：
+     * {@code remain = total_times - used_times - pending}。
+     * 少了这个维度，用户约完一节课之后凭证仍然显示"可用 1 次"，
+     * 一张三次的凭证能把下周整周约满——而扣次要到下课才发生。</p>
+     *
+     * <p>已取消与已上完的都不算：取消时格子被释放、上完时 {@code used_times} 已经 +1，
+     * 再算一次就是双重扣减。命中 idx_entitlement(entitlement_id, status)。</p>
+     */
+    @Select("<script>" +
+            "SELECT entitlement_id, COUNT(*) AS reservation_count FROM t_reservation" +
+            " WHERE status = 'BOOKED' AND entitlement_id IN " +
+            "<foreach collection='entitlementIds' item='id' open='(' separator=',' close=')'>#{id}</foreach>" +
+            " GROUP BY entitlement_id" +
+            "</script>")
+    List<ReservationCountRow> countPendingByEntitlements(@Param("entitlementIds") List<Long> entitlementIds);
 }

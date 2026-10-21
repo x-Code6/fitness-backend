@@ -3,7 +3,10 @@ package com.yuedong.course.mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.yuedong.course.model.entity.VideoProgress;
 import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
+
+import java.util.List;
 
 /**
  * 视频进度表 Mapper。
@@ -42,4 +45,18 @@ public interface VideoProgressMapper extends BaseMapper<VideoProgress> {
     @Update("UPDATE t_video_progress SET last_report_at = NOW(), updated_at = NOW() " +
             "WHERE user_id = #{userId} AND video_id = #{videoId}")
     int touchReport(@Param("userId") Long userId, @Param("videoId") Long videoId);
+
+    /** 标记完课事件已发送：只有发送成功才把 0 改成 1，失败时留在 0 等补偿任务 */
+    @Update("UPDATE t_video_progress SET finish_event_sent = 1, updated_at = NOW() " +
+            "WHERE user_id = #{userId} AND video_id = #{videoId}")
+    int markFinishEventSent(@Param("userId") Long userId, @Param("videoId") Long videoId);
+
+    /**
+     * 查“已完课但事件还没发出去”的记录，供补偿任务重发。
+     * <p>按 updated_at 升序，先处理等得最久的；任务每轮最多取 20 条，避免一次拖太多。</p>
+     */
+    @Select("SELECT * FROM t_video_progress " +
+            "WHERE finished = 1 AND finish_event_sent = 0 " +
+            "ORDER BY updated_at ASC LIMIT #{limit}")
+    List<VideoProgress> selectUnsentFinished(@Param("limit") int limit);
 }

@@ -4,6 +4,8 @@ import com.yuedong.common.constant.RedisKeyConstants;
 import com.yuedong.common.exception.BusinessException;
 import com.yuedong.common.result.ErrorCode;
 import com.yuedong.common.util.UserContext;
+import jakarta.servlet.ServletRequest;
+import jakarta.servlet.ServletResponse;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.aspectj.lang.ProceedingJoinPoint;
@@ -11,9 +13,12 @@ import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
 import org.aspectj.lang.reflect.MethodSignature;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.util.DigestUtils;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
+import org.springframework.web.multipart.MultipartFile;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 
 /**
@@ -114,7 +119,31 @@ public class IdempotentAspect {
         HttpServletRequest request = currentRequest();
         String path = request == null ? prefix : request.getRequestURI();
 
-        return RedisKeyConstants.idempotentApi(prefix, userId, path);
+        // ★把本次参数摘要也放进 key：只按 URI 会把"3 秒内领两张不同的券""评两笔不同的单"
+        // 误判成重复提交。参数可能是 DTO/集合，直接 toString 后取 MD5；请求/响应/文件对象跳过。
+        String argsDigest = argsDigest(joinPoint.getArgs());
+        return RedisKeyConstants.idempotentApi(prefix, userId, path + ":" + argsDigest);
+    }
+
+    /** 把方法参数压成一个短摘要；跳过 Servlet 对象和上传文件，避免把连接/文件内容拼进去 */
+    private String argsDigest(Object[] args) {
+        StringBuilder raw = new StringBuilder();
+        if (args != null) {
+            for (Object arg : args) {
+                if (arg == null) {
+                    continue;
+                }
+                if (arg instanceof ServletRequest || arg instanceof ServletResponse
+                        || arg instanceof MultipartFile) {
+                    continue;
+                }
+                raw.append(arg.getClass().getSimpleName())
+                        .append('=')
+                        .append(arg)
+                        .append(';');
+            }
+        }
+        return DigestUtils.md5DigestAsHex(raw.toString().getBytes(StandardCharsets.UTF_8));
     }
 
     /** 取当前线程绑定的 HTTP 请求；取不到返回 null，由调用方兜底 */

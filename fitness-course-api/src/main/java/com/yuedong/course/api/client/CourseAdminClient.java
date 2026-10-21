@@ -3,6 +3,8 @@ package com.yuedong.course.api.client;
 import com.yuedong.common.model.PageDTO;
 import com.yuedong.common.result.Result;
 import com.yuedong.course.api.dto.AdminCountDTO;
+import com.yuedong.course.api.dto.BannerAdminDTO;
+import com.yuedong.course.api.dto.BannerSaveDTO;
 import com.yuedong.course.api.dto.CoachAdminDTO;
 import com.yuedong.course.api.dto.CoachSaveDTO;
 import com.yuedong.course.api.dto.CourseAdminDTO;
@@ -176,4 +178,16 @@ public interface CourseAdminClient {
     /** 管理端看板：课程侧计数（在售课 / 可约教练 / 营业门店 / 今日应开放时段格子） */
     @GetMapping("/inner/course/admin/count")
     Result<AdminCountDTO> adminCount();
+
+    // ---------- 活动页 ----------
+    @GetMapping("/inner/course/banner/page")
+    Result<PageDTO<BannerAdminDTO>> bannerPage(@RequestParam("page") Integer page,
+                                               @RequestParam("size") Integer size);
+
+    @PostMapping("/inner/course/banner/save")
+    Result<Void> saveBanner(@RequestBody BannerSaveDTO dto);
+
+    @PostMapping("/inner/course/banner/status")
+    Result<Void> setBannerStatus(@RequestParam("id") Long id,
+                                 @RequestParam("status") Integer status);
 }

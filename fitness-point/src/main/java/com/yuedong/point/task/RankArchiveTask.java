@@ -7,22 +7,17 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 /**
- * 月榜归档任务（D17）：每月 1 日 00:10 把上一个自然月的实时榜写进 {@code t_rank_archive}。
+ * 月榜归档任务（D17）：每天 00:10 重算<b>上一个自然月</b>的榜并写进 {@code t_rank_archive}。
  *
- * <p>★<b>00:10 而不是 00:00</b>：00:00 是"当月"与"上月"的分界，
- * 那一刻还可能有余下的打卡请求在往旧 key 上 ZINCRBY（时钟、重试、排队）。
- * 让出十分钟，等旧 key 彻底静下来再搬。</p>
+ * <p>★为什么是每天而不是每月 1 日：归档现在从 {@code t_points_log} 重算，
+ * 同一个 season 重复 upsert 是安全的。每天跑一遍，等于给上一个月的任务
+ * <b>一整个月的重试窗口</b>；某天失败，第二天还会补，不会等到下个月才“误归档”另一个月。</p>
  *
- * <p>★<b>不需要分布式锁</b>：归档写入是 {@code INSERT ... ON DUPLICATE KEY UPDATE}，
- * 主键 {@code (season, user_id)}，重跑就是把同一批数据再覆盖一遍。
- * 本项目给定时任务加锁的判据只有一条——<b>写操作自己带不带条件</b>：
- * 带唯一键或状态 CAS 的不用锁，什么都不带的才需要。</p>
+ * <p>★00:10 而不是 00:00：00:00 是月份分界，可能还有跨零点的打卡/完课流水刚落到本库，
+ * 让出十分钟等它们静下来。</p>
  *
- * <p>⚠️ 依赖"当月 1 日 00:10 时上个月的 ZSet 还在 Redis 里"。
- * 实时榜 key 本来不设 TTL（见 RedisKeyConstants），所以这个前提成立；
- * 万一 Redis 被清过，那个月就归档不到（返回 0 只记一条 info 日志），
- * 补法是"从 {@code t_points_log} 按月份重算"——一期没写这个回填任务，
- * 因为它是"故障才用得上"的代码，写出来也没人验证过。</p>
+ * <p>★不需要分布式锁：写入是 {@code INSERT ... ON DUPLICATE KEY UPDATE}，
+ * 主键 {@code (season, user_id)}，重复执行就是覆盖同一批数据。</p>
  */
 @Slf4j
 @Component
@@ -31,8 +26,8 @@ public class RankArchiveTask {
 
     private final RankService rankService;
 
-    /** 每月 1 日 00:10 执行 */
-    @Scheduled(cron = "0 10 0 1 * ?")
+    /** 每天 00:10 重算上一个自然月；重复执行安全 */
+    @Scheduled(cron = "0 10 0 * * ?")
     public void archive() {
         try {
             int archived = rankService.archiveLastMonth();
@@ -40,8 +35,8 @@ public class RankArchiveTask {
                 log.info("月榜归档任务完成，共 {} 人", archived);
             }
         } catch (Exception e) {
-            // 任务内部吞异常但留痕：这一轮失败下一轮还能重跑（写入是 upsert，重跑安全）
-            log.error("月榜归档失败，下月同一时间会再试一次", e);
+            // 今天失败明天继续；流水还在，重算不会丢数据
+            log.error("月榜归档失败，明天继续重试", e);
         }
     }
 }

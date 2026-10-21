@@ -88,4 +88,25 @@ public class CourseSaveDTO {
     @Min(value = 0, message = "状态取 0 或 1")
     @Max(value = 1, message = "状态取 0 或 1")
     private Integer status;
+
+    // ===== 活动页（Banner）=====
+    /** 是否上架活动页 */
+    private Boolean bannerEnabled;
+
+    /** 活动海报相对路径，如 /uploads/banner/xxx.jpg */
+    @Size(max = 200)
+    private String bannerImageUrl;
+
+    @Size(max = 50)
+    private String bannerTitle;
+
+    @Size(max = 100)
+    private String bannerSubtitle;
+
+    private Integer bannerSort;
+
+    /** 可选覆盖；空则默认从当前时间开始、长期展示 */
+    private String bannerStartTime;
+
+    private String bannerEndTime;
 }

@@ -1,6 +1,7 @@
 package com.yuedong.course.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yuedong.common.constant.RedisKeyConstants;
@@ -31,6 +32,7 @@ import com.yuedong.course.model.entity.Store;
 import com.yuedong.course.model.vo.CourseVO;
 import com.yuedong.course.rule.RuleContext;
 import com.yuedong.course.rule.RuleDescribeFactory;
+import com.yuedong.course.service.BannerService;
 import com.yuedong.course.service.CourseService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -46,7 +48,9 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -109,6 +113,8 @@ public class CourseServiceImpl implements CourseService {
     private final com.yuedong.course.mapper.CoachCourseMapper coachCourseMapper;
     private final StoreMapper storeMapper;
     private final SeckillActivityMapper seckillActivityMapper;
+    /** 活动页联动：课程保存/下架/删除时同步 Banner */
+    private final BannerService bannerService;
     /** 规则文案工厂（D21 策略模式）。文案只在这一处产出，列表/详情/时段页都从这里取 */
     private final com.yuedong.course.rule.RuleDescribeFactory ruleDescribeFactory;
     /** 评分统计来自 order 域（评价明细与汇总都在 yd_order）。只读，取不到就显示"暂无评分" */
@@ -242,28 +248,39 @@ public class CourseServiceImpl implements CourseService {
      * </ul>
      */
     private void tryRebuildAsync(Long id) {
-        RLock lock = redisson.getLock(RedisKeyConstants.COURSE_LOCK + id);
-        boolean locked = false;
         try {
-            locked = lock.tryLock(0, LOCK_LEASE_SECONDS, TimeUnit.SECONDS);
-            if (!locked) {
-                return;
-            }
-            // 双重检查：等锁期间可能已被上一个持锁线程重建完
-            CacheWrapper<CourseVO> latest = readCache(id);
-            if (latest != null && latest.getExpireTime() > System.currentTimeMillis()) {
-                return;
-            }
-            rebuildExecutor.submit(() -> rebuildCache(id));
+            // ★锁必须在异步任务里“拿到 → 重建完 → 释放”，不能在请求线程里 submit 完就解锁：
+            //   提前解锁会让每个逻辑过期请求都再提交一次重建任务，重复打 DB。
+            rebuildExecutor.submit(() -> {
+                RLock lock = redisson.getLock(RedisKeyConstants.COURSE_LOCK + id);
+                boolean locked = false;
+                try {
+                    locked = lock.tryLock(0, LOCK_LEASE_SECONDS, TimeUnit.SECONDS);
+                    if (!locked) {
+                        return;
+                    }
+                    // 双重检查：等锁期间可能已被上一个持锁线程重建完
+                    CacheWrapper<CourseVO> latest = readCache(id);
+                    if (latest != null && latest.getExpireTime() > System.currentTimeMillis()) {
+                        return;
+                    }
+                    rebuildCache(id);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();   // 恢复中断标记，不要吞掉
+                    log.warn("等待课程缓存锁被中断: id={}", id);
+                } catch (Exception e) {
+                    log.error("课程详情异步重建失败: id={}", id, e);
+                } finally {
+                    // 只解自己拿到的锁；isHeldByCurrentThread 防止解掉别人的锁
+                    if (locked && lock.isHeldByCurrentThread()) {
+                        lock.unlock();
+                    }
+                }
+            });
             log.info("课程详情逻辑过期，已提交异步重建: id={}", id);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();   // 恢复中断标记，不要吞掉
-            log.warn("等待课程缓存锁被中断: id={}", id);
-        } finally {
-            // 只解自己拿到的锁；isHeldByCurrentThread 防止解掉别人的锁
-            if (locked && lock.isHeldByCurrentThread()) {
-                lock.unlock();
-            }
+        } catch (Exception e) {
+            // 线程池满/已关闭：不影响主流程，下一次请求还会再触发
+            log.error("提交课程详情异步重建失败: id={}", id, e);
         }
     }
 
@@ -274,6 +291,15 @@ public class CourseServiceImpl implements CourseService {
             if (course == null || course.getStatus() != 1) {
                 redis.delete(RedisKeyConstants.courseDetail(id));
                 redis.opsForValue().set(RedisKeyConstants.courseEmpty(id), "1", EMPTY_TTL);
+                return;
+            }
+            // ★重建期间管理端可能刚改了课程/门店并主动删了缓存：
+            //   这时本次查到的可能是旧快照，写回去会让旧配置再活 30 分钟。发现 key 已被删就丢弃。
+            //   （仍有“检查后、写入前刚好被删”的极窄窗口；彻底解决要加版本号，本期先把这个大窗口关掉。）
+            boolean detailStillCached = Boolean.TRUE.equals(redis.hasKey(RedisKeyConstants.courseDetail(id)));
+            boolean emptyStillCached = Boolean.TRUE.equals(redis.hasKey(RedisKeyConstants.courseEmpty(id)));
+            if (!detailStillCached && !emptyStillCached) {
+                log.info("课程详情缓存重建期间被主动失效，丢弃本次结果: id={}", id);
                 return;
             }
             writeCache(toVO(course, activeActivityMap().get(id),
@@ -314,6 +340,12 @@ public class CourseServiceImpl implements CourseService {
         // 但"4.8 分 / 12 条"是新评价一进来就该变的数，塞进缓存就会出现"评了却看不见"。
         // 所以缓存里<b>永远不含评分</b>，每次响应前单独取一次（一次批量 RPC，不是每条一次）
         fillCourseRatings(List.of(vo));
+
+        // ★门店列表也每次现查，不用缓存里那份：管理端随时会改"这门课在哪些店卖"，
+        // 而且前端要靠这个列表默认选中一家在卖的店——列表为空时详情页既选不出门店、
+        // 也查不出教练，症状是"本店暂无可约教练" + 点购买提示"请先在课程页选好门店"。
+        // 放在 storeId 判空之前：不带 storeId 的首次请求同样需要这份列表。
+        vo.setStores(loadStoreOptions(vo.getId()));
 
         // ★评论数同理，而且只有展示课需要（可售课的口碑在 ratingText 那格）
         if ("CONTENT".equals(vo.getKind())) {
@@ -454,10 +486,11 @@ public class CourseServiceImpl implements CourseService {
      */
     private CourseDTO assemble(Course course, CourseStore relation, Store store,
                                Long storeId, LocalDateTime now) {
+        // ★门店必须存在且营业中。以前只判"课程状态 + 课程门店关系"，
+        // 门店被删除/停用后关系还在，onSale 仍然是 true，用户能买到一家不存在的店。
+        boolean storeOpen = store != null && store.getStatus() != null && store.getStatus() == 1;
         boolean onSale = course.getStatus() != null && course.getStatus() == 1
-                && relation != null && relation.getStatus() != null && relation.getStatus() == 1
-                && relation.getSellStartTime() != null && !relation.getSellStartTime().isAfter(now)
-                && (relation.getSellEndTime() == null || !relation.getSellEndTime().isBefore(now));
+                && storeOpen && sellableNow(relation, now);
 
         String scene = ruleDescribeFactory.courseSceneOf(course.getCourseKind(), course.getSaleType());
         RuleContext ruleContext = buildRuleContext(course, relation);
@@ -569,10 +602,12 @@ public class CourseServiceImpl implements CourseService {
             List<Long> coachIds = coachesByCourse.getOrDefault(course.getId(), List.of());
             rows.add(toAdminDTO(course, courseWindows.size(), coachIds, courseWindows));
         }
+        bannerService.fillCourseBanners(rows);
         return PageDTO.of(rows, result.getTotal());
     }
 
     @Override
+    @org.springframework.transaction.annotation.Transactional(rollbackFor = Exception.class)
     public void adminSave(CourseSaveDTO dto) {
         boolean isNew = dto.getId() == null;
 
@@ -635,6 +670,8 @@ public class CourseServiceImpl implements CourseService {
         //   在写路径上重新拼一遍很容易和读路径不一致；删掉让唯一的读路径负责重建
         redis.delete(RedisKeyConstants.courseDetail(course.getId()));
         redis.delete(RedisKeyConstants.courseEmpty(course.getId()));
+        // 同一事务内同步活动页：课程与 Banner 要么一起成功，要么一起回滚
+        bannerService.upsertForCourse(course.getId(), dto);
         log.info("管理端保存课程: id={}, name={}, 新增={}", course.getId(), course.getName(), isNew);
     }
 
@@ -650,6 +687,9 @@ public class CourseServiceImpl implements CourseService {
         }
         redis.delete(RedisKeyConstants.courseDetail(id));   // 下架要立即对用户端生效
         redis.delete(RedisKeyConstants.courseEmpty(id));
+        if (Integer.valueOf(0).equals(status)) {
+            bannerService.disableByCourse(id);
+        }
     }
 
     @Override
@@ -659,6 +699,7 @@ public class CourseServiceImpl implements CourseService {
         courseMapper.deleteById(id);
         redis.delete(RedisKeyConstants.courseDetail(id));
         redis.delete(RedisKeyConstants.courseEmpty(id));
+        bannerService.disableByCourse(id);
         log.info("管理端删除课程: id={}", id);
     }
 
@@ -686,46 +727,76 @@ public class CourseServiceImpl implements CourseService {
         if (course == null) {
             throw new BusinessException(ErrorCode.COURSE_NOT_FOUND);
         }
+        if (storeIds == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "storeIds 不能为 null，清空请传空数组");
+        }
+        // 去重并保留顺序：前端可能传重复门店，去重后只处理一次
+        Set<Long> desiredStoreIds = new LinkedHashSet<>(storeIds);
 
-        // 先删后插的整体替换：配课量小（一门课几家店），不值得做差异计算
-        courseStoreMapper.delete(new LambdaQueryWrapper<CourseStore>()
-                .eq(CourseStore::getCourseId, courseId));
-
-        if (storeIds.isEmpty()) {
-            log.info("课程可售门店已清空: courseId={}", courseId);
-            return;
+        // ===== 第 1 步：一次查出已有关系，按 storeId 建索引 =====
+        // 后面只做差集，不再“先全删再全插”。整体重插的代价不是性能，
+        // 而是会把每家店已经配好的售卖窗口、有效期、库存全部重置成默认值。
+        List<CourseStore> existing = courseStoreMapper.selectList(
+                new LambdaQueryWrapper<CourseStore>().eq(CourseStore::getCourseId, courseId));
+        Map<Long, CourseStore> existingByStore = new HashMap<>();
+        for (CourseStore relation : existing) {
+            existingByStore.put(relation.getStoreId(), relation);
         }
 
+        // ===== 第 2 步：删掉不在新列表里的关系 =====
+        // 历史订单/凭证有门店名快照，不受影响。
+        for (CourseStore relation : existing) {
+            if (!desiredStoreIds.contains(relation.getStoreId())) {
+                courseStoreMapper.deleteById(relation.getId());
+            }
+        }
+
+        // ===== 第 3 步：新列表里的门店，已有关系保留原窗口，没有的才插默认值 =====
         LocalDateTime now = LocalDateTime.now();
-        for (Long storeId : storeIds) {
-            // 门店必须存在：下拉框选的一般都存在，但课程与门店可能被别的管理员刚删掉
-            if (storeMapper.selectById(storeId) == null) {
-                throw new BusinessException(ErrorCode.PARAM_ERROR, "门店不存在：" + storeId);
+        for (Long storeId : desiredStoreIds) {
+            if (storeId == null) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "门店 id 不能为空");
             }
-            CourseStore relation = new CourseStore();
-            relation.setCourseId(courseId);
-            relation.setStoreId(storeId);
-            relation.setSellStartTime(now);          // 默认开售=此刻
-            relation.setSellEndTime(null);           // 默认长期在售
-            relation.setValidType("DAYS");           // 默认领后 30 天内可用
-            relation.setValidDays(30);
-            relation.setUseStartTime(null);
-            relation.setUseEndTime(null);
-            relation.setStock(null);                 // 默认不限份数
-            relation.setStatus(1);
-            relation.setCreatedAt(now);
-            relation.setUpdatedAt(now);
-            try {
-                courseStoreMapper.insert(relation);
-            } catch (org.springframework.dao.DuplicateKeyException e) {
-                // 前端传了重复门店 id：已存在的就是我们要的状态，跳过即可
-                log.warn("可售门店重复，已忽略: courseId={}, storeId={}", courseId, storeId);
+            Store store = storeMapper.selectById(storeId);
+            if (store == null || store.getStatus() == null || store.getStatus() != 1) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "门店不存在或已停用：" + storeId);
             }
+
+            CourseStore relation = existingByStore.get(storeId);
+            if (relation != null) {
+                // 之前可能是下架状态，重新勾选就恢复在售；售卖窗口/有效期/库存一律保留
+                if (relation.getStatus() == null || relation.getStatus() != 1) {
+                    relation.setStatus(1);
+                    relation.setUpdatedAt(now);
+                    courseStoreMapper.updateById(relation);
+                }
+                continue;
+            }
+
+            CourseStore created = new CourseStore();
+            created.setCourseId(courseId);
+            created.setStoreId(storeId);
+            created.setSellStartTime(now);          // 默认开售=此刻
+            created.setSellEndTime(null);           // 默认长期在售
+            created.setValidType("DAYS");           // 默认支付后 30 天内可用
+            created.setValidDays(30);
+            created.setUseStartTime(null);
+            created.setUseEndTime(null);
+            created.setStock(null);                 // 默认不限份数
+            created.setStatus(1);
+            created.setCreatedAt(now);
+            created.setUpdatedAt(now);
+            courseStoreMapper.insert(created);
         }
 
-        // 可售门店是详情页要展示的内容，改完必须让缓存失效
-        redis.delete(RedisKeyConstants.courseDetail(courseId));
-        log.info("课程可售门店已更新: courseId={}, 门店数={}", courseId, storeIds.size());
+        // 可售门店是详情页要展示的内容，任何一次更新（包括清空）都必须让缓存失效。
+        // ★缓存删除失败不能回滚已经提交的配置：记日志，等缓存自然过期即可。
+        try {
+            redis.delete(RedisKeyConstants.courseDetail(courseId));
+        } catch (Exception e) {
+            log.error("课程门店关系已更新，但详情缓存删除失败，等待过期: courseId={}", courseId, e);
+        }
+        log.info("课程可售门店已更新: courseId={}, 门店数={}", courseId, desiredStoreIds.size());
     }
 
     // =====================================================================
@@ -799,6 +870,9 @@ public class CourseServiceImpl implements CourseService {
         }
 
         // ===== 第 2 步：跨字段校验（注解表达不了"条件必填"和区间先后）=====
+        if (dto.getSellStartTime() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "开售时间不能为空");
+        }
         if (dto.getSellEndTime() != null && !dto.getSellEndTime().isAfter(dto.getSellStartTime())) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "停售时间必须晚于开售时间");
         }
@@ -833,17 +907,26 @@ public class CourseServiceImpl implements CourseService {
                     "有效期类型只能是 FOREVER / DAYS / RANGE");
         }
 
-        // ===== 第 3 步：整行覆盖式更新（三个分支没选中的字段就是 null，正好把上一轮的残留清掉）=====
-        window.setSellStartTime(dto.getSellStartTime());
-        window.setSellEndTime(dto.getSellEndTime());
-        window.setValidType(validType);
-        window.setValidDays(validDays);
-        window.setUseStartTime(useStart);
-        window.setUseEndTime(useEnd);
-        window.setStock(dto.getStock());
-        window.setStatus(dto.getStatus() == null ? window.getStatus() : dto.getStatus());
-        window.setUpdatedAt(LocalDateTime.now());
-        courseStoreMapper.updateById(window);
+        // ===== 第 3 步：显式 UPDATE，允许把字段清成 NULL =====
+        // ★不能用 updateById：MyBatis-Plus 默认忽略 null 字段，
+        //   “把停售时间改回长期在售（sell_end_time=null）”“把库存改回不限（stock=null）”
+        //   都会被静默丢掉，管理员会以为保存成功、实际旧值还在。
+        //   LambdaUpdateWrapper 的 set 会把 null 写成真正的 SQL NULL。
+        LambdaUpdateWrapper<CourseStore> update = new LambdaUpdateWrapper<CourseStore>()
+                .eq(CourseStore::getId, window.getId())
+                .set(CourseStore::getSellStartTime, dto.getSellStartTime())
+                .set(CourseStore::getSellEndTime, dto.getSellEndTime())
+                .set(CourseStore::getValidType, validType)
+                .set(CourseStore::getValidDays, validDays)
+                .set(CourseStore::getUseStartTime, useStart)
+                .set(CourseStore::getUseEndTime, useEnd)
+                .set(CourseStore::getStock, dto.getStock())
+                .set(CourseStore::getStatus, dto.getStatus() == null ? window.getStatus() : dto.getStatus())
+                .set(CourseStore::getUpdatedAt, LocalDateTime.now());
+        int updated = courseStoreMapper.update(null, update);
+        if (updated == 0) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "课程门店关系不存在，保存失败");
+        }
 
         // ===== 第 4 步：窗口变了，课程详情缓存必须失效（可售状态、最近可购时间都在里面）=====
         redis.delete(RedisKeyConstants.courseDetail(window.getCourseId()));
@@ -904,6 +987,64 @@ public class CourseServiceImpl implements CourseService {
     // =====================================================================
     // 私有工具
     // =====================================================================
+
+    /**
+     * 这门课在这个门店此刻能不能卖。
+     *
+     * <p>★判定只写在这一处，{@code assemble()}（建单前的内部校验）和详情页的门店列表
+     * 共用同一个口径。两边各写一遍迟早分叉成"接口说在卖、详情页说停售"。</p>
+     *
+     * <p>注意这里<b>不判课程自身的上架状态</b>：调用方要么已经在 {@code getDetail} 里
+     * 拦掉了下架课程（{@code COURSE_NOT_FOUND}），要么像 {@code assemble} 那样自己补上这一层。</p>
+     */
+    private boolean sellableNow(CourseStore relation, LocalDateTime now) {
+        return relation != null
+                && relation.getStatus() != null && relation.getStatus() == 1
+                && relation.getSellStartTime() != null && !relation.getSellStartTime().isAfter(now)
+                && (relation.getSellEndTime() == null || !relation.getSellEndTime().isBefore(now));
+    }
+
+    /**
+     * 详情页"在哪家店买"的列表。
+     *
+     * <p>★<b>停售的门店也返回</b>，用 {@code onSale=false} 标灰而不是藏起来：
+     * 用户看到"这家店已停售"知道发生了什么，看到列表是空的只会以为课程坏了。</p>
+     *
+     * <p>两次查询拿完：关联表按 courseId 取全部关系，再用主键批量取门店名与营业时间，
+     * 不在循环里 selectById。</p>
+     */
+    private List<CourseVO.StoreOption> loadStoreOptions(Long courseId) {
+        List<CourseStore> relations = courseStoreMapper.selectList(
+                new LambdaQueryWrapper<CourseStore>().eq(CourseStore::getCourseId, courseId));
+        if (relations.isEmpty()) {
+            return List.of();
+        }
+        Set<Long> storeIds = relations.stream()
+                .map(CourseStore::getStoreId)
+                .filter(java.util.Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<Long, Store> stores = storeIds.isEmpty() ? Map.of()
+                : storeMapper.selectBatchIds(storeIds).stream()
+                .collect(Collectors.toMap(Store::getId, s -> s, (a, b) -> a));
+
+        LocalDateTime now = LocalDateTime.now();
+        List<CourseVO.StoreOption> options = new ArrayList<>(relations.size());
+        for (CourseStore relation : relations) {
+            Store store = stores.get(relation.getStoreId());
+            // 门店不存在或 status=0 都不可售；关系行保留是为了让用户看到“这家店已关闭”而不是整行消失
+            boolean storeOpen = store != null && store.getStatus() != null && store.getStatus() == 1;
+            options.add(CourseVO.StoreOption.builder()
+                    .storeId(relation.getStoreId())
+                    .storeName(store == null ? "门店已关闭" : store.getName())
+                    .onSale(storeOpen && sellableNow(relation, now))
+                    .openHoursText(store == null ? null : store.getOpenHoursText())
+                    .build());
+        }
+        // 在卖的排前面，同组按门店 id 稳定排序（否则每次刷新顺序会跳）
+        options.sort(Comparator.comparing((CourseVO.StoreOption o) -> !Boolean.TRUE.equals(o.getOnSale()))
+                .thenComparing(CourseVO.StoreOption::getStoreId));
+        return options;
+    }
 
     /** 一次取回这些课程的可售门店数（★绝不在循环里查库） */
     private Map<Long, Integer> loadStoreCounts(List<Long> courseIds) {

@@ -1,7 +1,9 @@
 package com.yuedong.order.api.dto;
 
+import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.util.List;
 
@@ -18,6 +20,8 @@ import java.util.List;
  */
 @Data
 @Builder
+@NoArgsConstructor
+@AllArgsConstructor
 public class OrderAdminDetailDTO {
 
     /** 钱那一轴：订单本体 */

@@ -77,4 +77,19 @@ public class CourseAdminDTO {
 
     /** 这门课在各门店的两层时间窗原始行（表单回填 + "哪家店在卖、什么时候能买"一眼看清） */
     private List<CourseWindowAdminDTO> storeWindows;
+
+    // ===== 活动页回填 =====
+    private Boolean bannerEnabled;
+
+    private String bannerImageUrl;
+
+    private String bannerTitle;
+
+    private String bannerSubtitle;
+
+    private Integer bannerSort;
+
+    private String bannerStartTime;
+
+    private String bannerEndTime;
 }
