@@ -7,6 +7,7 @@ import com.yuedong.course.api.client.CouponClient;
 import com.yuedong.course.api.client.CourseClient;
 import com.yuedong.course.api.dto.CourseDTO;
 import com.yuedong.course.api.dto.CouponUsableDTO;
+import com.yuedong.course.api.dto.SeckillActiveDTO;
 import com.yuedong.order.constant.OrderConstants;
 import lombok.Builder;
 import lombok.Data;
@@ -93,6 +94,64 @@ public class BookingPriceCalculator {
 
         /** 这个金额下用户所有未使用的券的判定结果，只有 withCouponList=true 时才填 */
         private List<CouponUsableDTO> couponOptions;
+
+        /** 秒杀活动 id。★非 null 就是秒杀单，会落进 t_booking.activity_id，
+         *  也是管理端统计"这场活动卖了多少"的唯一依据（普通单永远是 null） */
+        private Long activityId;
+
+        /** 秒杀标记。份数锁 1、不给用券，前端据此隐藏这两个控件，而不是"提交了才报错" */
+        private boolean seckill;
+
+        /** 活动结束时间（毫秒）。确认页倒计时用——秒杀页没有倒计时等于没做完 */
+        private Long seckillEndTime;
+    }
+
+    /**
+     * 秒杀算价。<b>只覆盖价格这一层，其余规则全部复用普通算价。</b>
+     *
+     * <p>★可售判定、课程快照、凭证张数（timesGranted）、门店名这些和"是不是秒杀"无关，
+     * 所以这里调一次 {@link #quote} 再改价，而不是再写一遍取数与校验。
+     * 秒杀和普通购买最容易被写成两套逻辑，之后"普通单约不了课而秒杀单能约"
+     * 这类差异就说不清了。</p>
+     *
+     * <p>★这里<b>不碰库存、不判一人一单</b>：试算是只读的，用户点进确认页不算抢购。
+     * 真正的原子扣减在提交下单那一步（{@code SeckillStockGateway}）。</p>
+     *
+     * @param activityId 前端从秒杀列表带过来的活动 id。允许为 null（只按课程查当前进行中的活动），
+     *                   但传了就必须和此刻进行中的活动一致——不一致说明活动刚被换过，
+     *                   按"活动已结束"拒绝，不能拿新活动的价格去成交旧活动的单。
+     */
+    public Quote quoteSeckill(Long userId, Long courseId, Long activityId) {
+        Result<SeckillActiveDTO> activeResult = courseClient.activeSeckill(courseId);
+        if (activeResult.getCode() != 0 || activeResult.getData() == null) {
+            throw new BusinessException(ErrorCode.SECKILL_NOT_ACTIVE);
+        }
+        SeckillActiveDTO active = activeResult.getData();
+
+        if (activityId != null && !activityId.equals(active.getActivityId())) {
+            throw new BusinessException(ErrorCode.SECKILL_NOT_ACTIVE, "该场秒杀已结束，请重新选择");
+        }
+        // 门店来自活动而不是课程：v2 里一门课可以在多家店卖，抢的是"这家店的名额"
+        if (active.getStoreId() == null) {
+            throw new BusinessException(ErrorCode.SECKILL_NOT_ACTIVE, "该活动未配置门店，暂不可抢");
+        }
+        if (active.getSeckillPrice() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "该活动未配置秒杀价，请联系门店");
+        }
+
+        // 份数固定 1、券固定不用：这两个约束在秒杀域里是规则，不给调用方选择的机会
+        Quote quote = quote(userId, courseId, active.getStoreId(), 1, null, false);
+
+        BigDecimal listPrice = quote.getUnitPrice();
+        BigDecimal seckillPrice = active.getSeckillPrice();
+        quote.setActivityId(active.getActivityId());
+        quote.setSeckill(true);
+        quote.setSeckillEndTime(active.getEndTime());
+        quote.setUnitPrice(seckillPrice);
+        // 原价小计留着课程原价：订单详情要显示划线价，这两个数不能合并成一个字段
+        quote.setDiscountAmount(listPrice.subtract(seckillPrice).max(BigDecimal.ZERO));
+        quote.setPayAmount(seckillPrice.max(BigDecimal.ZERO));
+        return quote;
     }
 
     /**

@@ -3,6 +3,7 @@ package com.yuedong.order.model.vo;
 import lombok.Builder;
 import lombok.Data;
 
+import java.math.BigDecimal;
 import java.util.List;
 
 /**
@@ -50,7 +51,26 @@ public class EntitlementVO {
 
     private Integer usedTimes;
 
-    /** 剩余次数；不限次为 null（前端显示"不限"） */
+    /** 出票时按份数分摊到的实付金额；按张退款以它为准 */
+    private BigDecimal paidAmount;
+
+    /** 已退款金额；0 表示没退过 */
+    private BigDecimal refundAmount;
+
+    /** 退款文案："已退款 ¥75.00"；没退过为 null */
+    private String refundText;
+
+    /**
+     * 已约但还没去上的节数（占用中）。★2026-10-20 新增：
+     * 以前只有 usedTimes（含义是"上过课"，下课才 +1），于是"约完一节课"到"上完"这段时间
+     * 凭证看起来仍然满额，一张三次的卡能同时把下周约满。
+     */
+    private Integer pendingTimes;
+
+    /** 占用提示文案，如"1 节待上课"；没有占用时为 null，前端就不渲染这一行 */
+    private String pendingText;
+
+    /** 剩余次数 = 总数 - 已上课 - 占用中；不限次为 null（前端显示"不限"） */
     private Integer remainTimes;
 
     /** 是否不限次。给布尔是为了让前端只写一个三元，不用再比字符串 */
@@ -68,8 +88,8 @@ public class EntitlementVO {
     private String statusText;
 
     /**
-     * 现在能不能拿去预约。★后端算：状态 ACTIVE + 有剩余次数（或不限次）+ 未到有效期，
-     * 三个条件里有两个是 NULL 语义判断，前端拿不到数据库约定，自己拼一定会拼错。
+     * 现在能不能拿去预约。★后端算：状态 ACTIVE + 没有待上的课占用 + 剩余次数够（或不限次）
+     * + 未到有效期。四个条件里两个是 NULL 语义判断，前端拿不到数据库约定，自己拼一定会拼错。
      */
     private Boolean canBook;
 

@@ -21,6 +21,7 @@ import com.yuedong.order.model.entity.Entitlement;
 import com.yuedong.order.model.entity.Reservation;
 import com.yuedong.order.model.vo.ReservationVO;
 import com.yuedong.order.mq.NotifyPublisher;
+import com.yuedong.order.rule.BookingTimeRule;
 import com.yuedong.order.service.EntitlementService;
 import com.yuedong.order.service.ReservationService;
 import lombok.RequiredArgsConstructor;
@@ -103,17 +104,24 @@ public class ReservationServiceImpl implements ReservationService {
                 ? 1 : entitlement.getLessonHours();
         LocalDateTime endTime = startTime.plusHours(lessonHours);
 
-        // ===== 第 4 步：凭证有效期要覆盖<b>上课那一刻</b>，而不是"现在" =====
-        // ★这是"有效期最后一天约晚上的课"那个场景：用 now 判会误放行，
-        // 等真去上课时凭证已经过期。实体上的 usableAt(moment) 就是为此存在
-        if (!entitlement.usableAt(startTime)) {
+        // ===== 第 4 步：凭证有效期要覆盖<b>下课那一刻</b>，而不是"现在"或"开课" =====
+        // ★这是"有效期最后一天约晚上的课"那个场景：只判 startTime 会放行一节
+        //   开课前 1 分钟开始、下课后才结束的 2 小时课；过期任务在上课中途把凭证置 EXPIRED，
+        //   结算时 consumeOne 扣不动，用户既上了课又可能拿到退款。所以必须用 endTime。
+        if (!entitlement.validCovers(endTime)) {
             throw new BusinessException(ErrorCode.ENTITLEMENT_TIME_CONFLICT,
-                    "凭证在上课时刻会失效，请换一张或选择更早的时间");
+                    "凭证在下课时已失效，请换一张或选择更早的时间");
         }
 
-        // ===== 第 5 步：教练必须会这门课、就在这家店、且当天上班、区间放得下 =====
+        // ===== 第 5 步：门店、教练、时间窗一起校验 =====
+        // ★门店必须仍然存在且营业：时段页用"门店营业 ∩ 教练工时"，
+        //   建单这里如果只校验教练，就会放行"门店没营业"的时段。
         CoachDTO coach = findBookableCoach(entitlement, dto.getCoachId());
-        validateCoachWindow(coach, startTime, lessonHours);
+        StoreDTO store = storeClient.detail(entitlement.getStoreId()).getData();
+        if (store == null || !Integer.valueOf(1).equals(store.getStatus())) {
+            throw new BusinessException(ErrorCode.STORE_NOT_FOUND, "门店已关闭，暂不可预约");
+        }
+        validateTimeWindow(coach, store, startTime, lessonHours);
 
         // ===== 第 6 步：同一用户同一时刻只能有一节课 =====
         // ★这一条唯一索引管不了（索引只管"一个教练一小时"），只能业务判：
@@ -166,6 +174,13 @@ public class ReservationServiceImpl implements ReservationService {
             try {
                 coachBusyMapper.insert(busy);
             } catch (DuplicateKeyException e) {
+                String message = String.valueOf(e.getMessage());
+                if (message.contains("uk_user_start")) {
+                    // 同一个人同一小时约了两个不同教练：教练格子不冲突，
+                    // 只有 (user_id, start_time) 唯一键能兜住这种并发。
+                    throw new BusinessException(ErrorCode.SLOT_NOT_BOOKABLE,
+                            "这个时间你已经有一节课了，请先取消或换时间");
+                }
                 throw new BusinessException(ErrorCode.SLOT_ALREADY_TAKEN);
             }
         }
@@ -176,7 +191,7 @@ public class ReservationServiceImpl implements ReservationService {
                         + " 已约「" + coach.getName() + "」教练，到店出示核销码 "
                         + reservation.getVerifyCode() + "；"
                         + startTime.minusHours(OrderConstants.CANCEL_DEADLINE_HOURS).format(TIME_FMT)
-                        + " 前可免费取消，取消不扣次数。");
+                        + " 前可免费取消。本次预约占用凭证一次额度，去上完课才算消费，取消则退回。");
 
         log.info("预约成功: reservationNo={}, userId={}, coachId={}, start={}, 占用 {} 格",
                 reservation.getReservationNo(), userId, coach.getCoachId(), startTime, lessonHours);
@@ -201,19 +216,28 @@ public class ReservationServiceImpl implements ReservationService {
         throw new BusinessException(ErrorCode.COACH_NOT_QUALIFIED);
     }
 
-    /** 校验起点落在"门店营业 ∩ 教练工时"内，且 H 个格子都在区间里 */
-    private void validateCoachWindow(CoachDTO coach, LocalDateTime startTime, int lessonHours) {
-        if (!worksOn(coach.getWorkDays(), startTime.toLocalDate())) {
+    /**
+     * 校验起点落在"门店营业 ∩ 教练工时"内，且整节课的所有格子都在区间里。
+     * <p>★和时段页共用 {@link BookingTimeRule}，不再各写一套。</p>
+     */
+    private void validateTimeWindow(CoachDTO coach, StoreDTO store,
+                                    LocalDateTime startTime, int lessonHours) {
+        if (!BookingTimeRule.worksOn(coach.getWorkDays(), startTime.toLocalDate())) {
             throw new BusinessException(ErrorCode.SLOT_NOT_BOOKABLE, coach.getName() + " 教练周"
                     + weekDayText(startTime.toLocalDate()) + "不排班");
         }
+        int openStart = BookingTimeRule.openStart(store, coach);
+        int openEnd = BookingTimeRule.openEnd(store, coach);
         int startHour = startTime.getHour();
-        int workStart = coach.getWorkStartHour() == null ? 0 : coach.getWorkStartHour();
-        int workEnd = coach.getWorkEndHour() == null ? 24 : coach.getWorkEndHour();
-        if (startHour < workStart || startHour + lessonHours > workEnd) {
+        if (startHour < openStart || startHour + lessonHours > openEnd) {
             throw new BusinessException(ErrorCode.SLOT_NOT_BOOKABLE,
-                    "该时段超出教练可约区间（" + String.format("%02d:00-%02d:00", workStart, workEnd) + "）");
+                    "该时段不在门店营业与教练工时的交集内（"
+                            + formatHour(openStart) + "-" + formatHour(openEnd) + "）");
         }
+    }
+
+    private String formatHour(int hour) {
+        return String.format("%02d:00", hour);
     }
 
     /** 落预约单，单号/核销码撞唯一索引时最多换三次 */
@@ -222,11 +246,22 @@ public class ReservationServiceImpl implements ReservationService {
             reservation.setReservationNo(genReservationNo());
             reservation.setVerifyCode(genVerifyCode());
             try {
-                // 增：写 t_reservation。uk_reservation_no 与 uk_verify_code 任一撞键
-                // 都只是"随机数撞车"，换个值重试即可，不是业务冲突
+                // 增：写 t_reservation。
+                // ★先判"撞的是哪条索引"，两类撞键的处置完全相反：
+                //   uk_reservation_no / uk_verify_code 撞了 = 随机号选得太巧，换个值重试就行；
+                //   uk_pending_entitlement 撞了 = 这张凭证同时只能挂一节课，是<b>业务冲突</b>，
+                //   重试三次只会连撞三次，必须立刻停下来告诉用户"还有一节没上完"。
+                //   （并发两个请求都通过了第 1 步的额度检查，就在这里被数据库分出胜负——
+                //    靠查询判断挡不住，查询和写入之间永远有窗口。）
                 reservationMapper.insert(reservation);
                 return;
             } catch (DuplicateKeyException e) {
+                String message = String.valueOf(e.getMessage());
+                if (message.contains("uk_pending_entitlement")) {
+                    log.warn("同一凭证并发重复预约，被唯一索引挡住: entitlementId={}, userId={}",
+                            reservation.getEntitlementId(), reservation.getUserId());
+                    throw new BusinessException(ErrorCode.ENTITLEMENT_PENDING_FULL);
+                }
                 if (attempt == 2) {
                     log.error("预约单号/核销码连续三次撞键，放弃", e);
                     throw new BusinessException(ErrorCode.SYSTEM_ERROR, "预约失败，请重试");
@@ -291,7 +326,7 @@ public class ReservationServiceImpl implements ReservationService {
         notifyPublisher.publishBookingNotify(userId, "预约已取消",
                 "「" + reservation.getCourseName() + "」" + reservation.getStartTime().format(TIME_FMT)
                         + " 的预约已取消，" + released + " 个时段已释放给其他会员。"
-                        + "取消不扣次数，你的凭证还可以再约。");
+                        + "这次占用的次数已退回凭证，可以重新预约（上课才会真正扣次）。");
 
         log.info("预约已取消: reservationNo={}, userId={}, 释放格子 {} 个",
                 reservationNo, userId, released);
@@ -534,19 +569,6 @@ public class ReservationServiceImpl implements ReservationService {
             code.append(random.nextInt(10));
         }
         return code.toString();
-    }
-
-    private boolean worksOn(String workDays, LocalDate day) {
-        if (workDays == null || workDays.isBlank()) {
-            return false;
-        }
-        String dow = String.valueOf(day.getDayOfWeek().getValue());
-        for (String part : workDays.split(",")) {
-            if (part.trim().equals(dow)) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private String weekDayText(LocalDate day) {

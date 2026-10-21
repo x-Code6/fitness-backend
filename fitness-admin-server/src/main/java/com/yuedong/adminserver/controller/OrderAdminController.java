@@ -77,6 +77,7 @@ public class OrderAdminController {
                         .originalAmount(b.getOriginalAmount())
                         .discountAmount(b.getDiscountAmount())
                         .payAmount(b.getPayAmount())
+                        .refundAmount(b.getRefundAmount())
                         .couponTitle(b.getCouponTitle())
                         .status(b.getStatus())
                         .statusText(b.getStatusText())

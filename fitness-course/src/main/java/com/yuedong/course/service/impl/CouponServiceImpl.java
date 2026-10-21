@@ -22,12 +22,15 @@ import com.yuedong.course.model.vo.MyCouponVO;
 import com.yuedong.course.rule.RuleContext;
 import com.yuedong.course.rule.RuleDescribeFactory;
 import com.yuedong.course.rule.RuleTextConstants;
+import com.yuedong.course.service.BannerService;
+import com.yuedong.course.service.CouponReceiveTxWriter;
 import com.yuedong.course.service.CouponService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -69,6 +72,10 @@ public class CouponServiceImpl implements CouponService {
 
     private final CouponMapper couponMapper;
     private final UserCouponMapper userCouponMapper;
+    /** 领券的事务段：持券记录 + DB 库存一起成败（单独 Bean 才能让 @Transactional 生效） */
+    private final CouponReceiveTxWriter couponReceiveTxWriter;
+    /** 活动页联动：券保存/作废时同步 Banner */
+    private final BannerService bannerService;
     private final CouponCourseMapper couponCourseMapper;
     private final CouponStoreMapper couponStoreMapper;
     private final StringRedisTemplate redis;
@@ -255,45 +262,36 @@ public class CouponServiceImpl implements CouponService {
         }
 
         // ===== Redis 已扣，DB 写失败要回补（★回补的是计数和库存两处）=====
+        // ★持券记录和 DB 库存扣减必须在同一个事务里：
+        //   以前插入记录先自动提交，DB 扣库存失败时只回补 Redis，
+        //   用户会白得一张券；现在任一步失败，整个事务回滚，Redis 再回补。
         try {
-            insertRecord(userId, coupon.getId());
-        } catch (Exception e) {
-            restoreRedis(coupon.getId(), userId);
-            log.error("领券写库失败，已回补 Redis: userId={}, couponId={}", userId, coupon.getId(), e);
+            couponReceiveTxWriter.saveSeckillRecord(userId, coupon.getId());
+        } catch (RuntimeException e) {
+            // 先尝试回补 Redis；回补本身失败只记日志，不能盖掉真正的业务异常
+            try {
+                restoreRedis(coupon.getId(), userId);
+            } catch (Exception restoreError) {
+                log.error("领券写库失败后，Redis 回补也失败，需人工核对: userId={}, couponId={}",
+                        userId, coupon.getId(), restoreError);
+            }
+            log.error("领券写库失败: userId={}, couponId={}", userId, coupon.getId(), e);
+            if (e instanceof BusinessException businessException) {
+                throw businessException;
+            }
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "领取失败，请重试");
-        }
-
-        // DB 侧账本扣减。remain>0 条件保证不扣成负数；返回 0 说明 Redis 与 DB 已经不一致
-        if (couponMapper.deductRemain(coupon.getId()) == 0) {
-            restoreRedis(coupon.getId(), userId);
-            log.error("券 DB 库存已空但 Redis 还有，按售罄处理: couponId={}", coupon.getId());
-            throw new BusinessException(ErrorCode.COUPON_SOLD_OUT);
         }
         log.info("秒杀券领取成功: userId={}, couponId={}", userId, coupon.getId());
     }
 
-    /** 普通券：不限量、低频，普通写法即可（三档标准里的"不防"） */
+    /**
+     * 普通券：不限库存，但 limit_per_user > 0 时仍要限领。
+     * <p>★交给事务 Bean 做“锁券模板行 + COUNT + 插入”，
+     * 否则两个并发请求会同时 COUNT 到 limit-1，最后都插入成功。</p>
+     */
     private void receiveNormal(Coupon coupon, Long userId, int limit) {
-        if (limit > 0) {
-            // 查"这个人这张券领过几张"。★命中 idx_user_coupon(user_id, coupon_id, status) 的最左前缀
-            Long got = userCouponMapper.selectCount(new LambdaQueryWrapper<UserCoupon>()
-                    .eq(UserCoupon::getUserId, userId)
-                    .eq(UserCoupon::getCouponId, coupon.getId()));
-            if (got != null && got >= limit) {
-                throw new BusinessException(ErrorCode.COUPON_DUPLICATE, "每人限领 " + limit + " 张");
-            }
-        }
-        insertRecord(userId, coupon.getId());
+        couponReceiveTxWriter.saveNormalRecord(userId, coupon.getId(), limit);
         log.info("普通券领取成功: userId={}, couponId={}", userId, coupon.getId());
-    }
-
-    private void insertRecord(Long userId, Long couponId) {
-        UserCoupon record = new UserCoupon();
-        record.setUserId(userId);
-        record.setCouponId(couponId);
-        record.setStatus("UNUSED");
-        record.setReceivedAt(LocalDateTime.now());
-        userCouponMapper.insert(record);
     }
 
     /**
@@ -389,8 +387,9 @@ public class CouponServiceImpl implements CouponService {
     }
 
     @Override
-    public boolean refund(Long recordId) {
-        return userCouponMapper.refund(recordId) > 0;
+    public boolean refund(Long recordId, String orderNo) {
+        // 改：USED → UNUSED，同时要求 order_no 匹配，防止把别的订单上的用券退掉
+        return userCouponMapper.refund(recordId, orderNo) > 0;
     }
 
     // =====================================================================
@@ -446,6 +445,7 @@ public class CouponServiceImpl implements CouponService {
                     .status(coupon.getStatus())
                     .build());
         }
+        bannerService.fillCouponBanners(list);
         return PageDTO.of(list, result.getTotal());
     }
 
@@ -550,6 +550,8 @@ public class CouponServiceImpl implements CouponService {
         if (seckill && coupon.getStatus() == 1) {
             preheat(coupon);
         }
+        // 活动页与券同事务保存，避免券上架了但 Banner 写失败
+        bannerService.upsertForCoupon(coupon.getId(), dto);
         log.info("券已保存: couponId={}, type={}, scope={}", coupon.getId(), coupon.getCouponType(), scope);
     }
 
@@ -563,6 +565,7 @@ public class CouponServiceImpl implements CouponService {
         couponMapper.updateById(coupon);
         // 作废后立刻让 Redis 库存失效，正在抢的人下一次 Lua 就会因"键不存在"被判售罄
         redis.delete(RedisKeyConstants.couponStock(id));
+        bannerService.disableByCoupon(id);
     }
 
     // =====================================================================
@@ -570,16 +573,63 @@ public class CouponServiceImpl implements CouponService {
     // =====================================================================
 
     /**
-     * 库存预热。
+     * 库存预热/补建。
+     *
      * <p>★<b>绝不删 {@code coupon:got} 计数</b>：那会把"每人限领 N 张"的资格清空，
-     * 领过的人能再领一遍——和秒杀里"重复预热不能删 bought"是同一个坑。
-     * 只在设库存，让 Redis 的剩余数跟上管理员改的总量。</p>
+     * 领过的人能再领一遍——和秒杀里"重复预热不能删 bought"是同一个坑。</p>
+     *
+     * <p>★领取窗口内用 SETNX：Redis 重启/多实例重复预热时只补缺，
+     * 不覆盖正在扣减的库存；窗口外（还没开抢）用 SET，让管理员改的总量生效。</p>
      */
     private void preheat(Coupon coupon) {
-        long ttl = Math.max(60, Duration.between(LocalDateTime.now(), coupon.getReceiveEndTime()).toSeconds());
-        redis.opsForValue().set(RedisKeyConstants.couponStock(coupon.getId()),
-                String.valueOf(coupon.getRemain() == null ? 0 : coupon.getRemain()),
-                Duration.ofSeconds(ttl));
+        if (coupon.getReceiveEndTime() == null) {
+            log.warn("券没有领取截止时间，跳过预热: couponId={}", coupon.getId());
+            return;
+        }
+        LocalDateTime now = LocalDateTime.now();
+        long ttl = Math.max(60, Duration.between(now, coupon.getReceiveEndTime()).toSeconds());
+        String key = RedisKeyConstants.couponStock(coupon.getId());
+        String stock = String.valueOf(coupon.getRemain() == null ? 0 : coupon.getRemain());
+        boolean receiving = coupon.getReceiveStartTime() != null
+                && !now.isBefore(coupon.getReceiveStartTime())
+                && !now.isAfter(coupon.getReceiveEndTime());
+
+        try {
+            if (receiving) {
+                Boolean created = redis.opsForValue().setIfAbsent(
+                        key, stock, Duration.ofSeconds(ttl));
+                if (Boolean.TRUE.equals(created)) {
+                    log.info("券库存已补建（领取中，未覆盖已有库存）: couponId={}, stock={}",
+                            coupon.getId(), stock);
+                }
+            } else {
+                redis.opsForValue().set(key, stock, Duration.ofSeconds(ttl));
+                log.info("券库存已预热: couponId={}, stock={}", coupon.getId(), stock);
+            }
+        } catch (Exception e) {
+            // 预热失败不能阻断管理员保存；下一分钟的补偿任务会再补
+            log.error("券库存预热失败: couponId={}", coupon.getId(), e);
+        }
+    }
+
+    /**
+     * 每分钟补建"正在领取"的秒杀券库存 key。
+     *
+     * <p>★解决什么：券以前只在管理端保存时预热一次，Redis 重启/被清后
+     * Lua 把缺键当 0，用户永远领不到，直到管理员再保存一次。
+     * 这里只补不存在的 key，已有库存绝不覆盖。</p>
+     */
+    @Scheduled(fixedDelay = 60_000)
+    public void repairSeckillStockKeys() {
+        LocalDateTime now = LocalDateTime.now();
+        List<Coupon> coupons = couponMapper.selectList(new LambdaQueryWrapper<Coupon>()
+                .eq(Coupon::getStatus, 1)
+                .eq(Coupon::getCouponType, "SECKILL")
+                .le(Coupon::getReceiveStartTime, now)
+                .ge(Coupon::getReceiveEndTime, now));
+        for (Coupon coupon : coupons) {
+            preheat(coupon);
+        }
     }
 
     /** 按 valid_type 现算这张券的使用截止（★不写库，只用于展示与校验） */

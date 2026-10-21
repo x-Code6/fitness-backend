@@ -29,8 +29,9 @@ public final class RedisKeyConstants {
     /** 一人一单资格集合，Set，course 预热清空 / order Lua SADD·SISMEMBER */
     public static final String SECKILL_BOUGHT = "seckill:bought:";
 
-    /** 秒杀排队结果，String（QUEUEING/SUCCESS:单号/FAIL:原因），order 写，TTL 10 分钟 */
-    public static final String SECKILL_RESULT = "seckill:result:";
+    // ★seckill:result:{seqId} 这条已经删除：它是"异步建单 + 前端轮询"时代的排队结果缓存。
+    //   现在提交时订单同步落库，用户的答案在 t_booking 里，不需要第二份真相；
+    //   留着只会让人以为"还有一个 seqId 状态机要维护"。
 
     public static String seckillStock(Long activityId) {
         return SECKILL_STOCK + activityId;
@@ -38,10 +39,6 @@ public final class RedisKeyConstants {
 
     public static String seckillBought(Long activityId) {
         return SECKILL_BOUGHT + activityId;
-    }
-
-    public static String seckillResult(String seqId) {
-        return SECKILL_RESULT + seqId;
     }
 
     // ==================== 课程缓存域（course 服务） ====================

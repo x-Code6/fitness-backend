@@ -17,8 +17,11 @@ public interface GiftService {
 
     /**
      * 积分兑换：CAS 扣积分 + 原子扣库存（同事务，任一失败整体回滚）+ 流水 + 通知。
+     *
+     * @param requestId 本次兑换的请求号；同一个请求号只会扣一次积分。
+     *                  不传时服务端生成一个随机号（能挡双击，但挡不住隔几秒的重试）。
      */
-    void exchange(Long userId, Long giftId);
+    void exchange(Long userId, Long giftId, String requestId);
 
     /** 管理端：商品分页 */
     PageDTO<GiftDTO> adminPage(Integer page, Integer size);

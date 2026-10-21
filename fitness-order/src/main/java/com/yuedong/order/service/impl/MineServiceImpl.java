@@ -51,13 +51,17 @@ public class MineServiceImpl implements MineService {
                 .eq(Booking::getStatus, BookingStatus.UNPAID));
 
         // ② 待使用：凭证轴。先按 user + ACTIVE 收（命中 idx_user_status），
-        //    次数与有效期两套 NULL 语义交给实体上的 usableAt 判（★不在这里再写一遍条件）
+        //    次数、有效期、占用三套语义一起判，规则只在实体的 bookableAt 里有一份（★这里不再写条件）。
+        //    ★占用必须算进来：一个人约好课后这张凭证还没扣次，但它今天已经不能再去约第二节了，
+        //      九宫格上写"待使用 2"点进去却约不了，就是骗人。
         List<Entitlement> actives = entitlementMapper.selectList(new LambdaQueryWrapper<Entitlement>()
                 .eq(Entitlement::getUserId, userId)
                 .eq(Entitlement::getStatus, EntitlementStatus.ACTIVE));
+        Map<Long, Integer> pendingMap = entitlementService.pendingCounts(
+                actives.stream().map(Entitlement::getId).toList());
         int waitUse = 0;
         for (Entitlement entitlement : actives) {
-            if (entitlement.usableAt(now)) {
+            if (entitlement.bookableAt(now, pendingMap.getOrDefault(entitlement.getId(), 0))) {
                 waitUse++;
             }
         }

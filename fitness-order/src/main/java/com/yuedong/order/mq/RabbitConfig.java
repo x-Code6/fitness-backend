@@ -19,14 +19,18 @@ import java.util.Map;
 /**
  * RabbitMQ 拓扑（订单服务）。
  *
- * <p>四组资源：</p>
+ * <p>三组资源：</p>
  * <ol>
- *   <li>秒杀建单：ex.order.seckill → q.order.seckill.create（消费端建订单，削峰）；</li>
  *   <li>延迟取消：ex.order.delay（x-delayed-message 插件交换机）→ q.order.timeout，
  *       消息头 x-delay=15 分钟，用于"下单未支付超时自动取消"；</li>
- *   <li>死信兜底：建单队列消费抛意外异常时 nack 进 q.order.seckill.dlq，人工/定时补偿；</li>
+ *   <li>死信兜底：消费 nack(requeue=false) 后转入 q.order.timeout.dlq，看得见也能人工重投；</li>
  *   <li>publisher confirm：消息到达交换机后回调，投递失败打错误日志（可扩展重发）。</li>
  * </ol>
+ *
+ * <p>★<b>这里不再有"秒杀建单"那组队列</b>：秒杀改成"提交时同步落单、异步只做收尾"之后，
+ * 建单这件事的真相就在 t_booking 里，不需要一条消息去驱动它被创建。
+ * 留着两套入口会让"一人一单"出现两份实现——而这两份实现一旦分叉，
+ * 症状是"同一个人抢出两张单"，属于最难回滚的一类线上事故。</p>
  */
 @Slf4j
 @RequiredArgsConstructor
@@ -40,46 +44,10 @@ public class RabbitConfig {
         return new org.springframework.amqp.core.TopicExchange(MqConstants.NOTIFY_EXCHANGE, true, false);
     }
 
-    // ---------- 秒杀建单 ----------
-
-    // ---------- 死信 ----------
-
-    // ---------- 延迟取消 ----------
-
-    // ---------- 秒杀建单队列（带死信配置：消费 nack 后转入死信） ----------
-    @Bean
-    public Queue seckillCreateQueue() {
-        return QueueBuilder.durable(MqConstants.ORDER_SECKILL_CREATE_QUEUE)
-                .deadLetterExchange(MqConstants.ORDER_DLX)
-                .deadLetterRoutingKey(MqConstants.ORDER_DLQ_KEY)
-                .build();
-    }
-
-    @Bean
-    public DirectExchange seckillExchange() {
-        return new DirectExchange(MqConstants.ORDER_SECKILL_EXCHANGE, true, false);
-    }
-
-    @Bean
-    public Binding seckillBinding() {
-        return BindingBuilder.bind(seckillCreateQueue()).to(seckillExchange())
-                .with(MqConstants.ORDER_SECKILL_CREATE_KEY);
-    }
-
     // ---------- 死信交换机与队列 ----------
     @Bean
     public DirectExchange orderDlx() {
         return new DirectExchange(MqConstants.ORDER_DLX, true, false);
-    }
-
-    @Bean
-    public Queue seckillDlq() {
-        return new Queue(MqConstants.ORDER_SECKILL_DLQ, true);
-    }
-
-    @Bean
-    public Binding seckillDlqBinding() {
-        return BindingBuilder.bind(seckillDlq()).to(orderDlx()).with("order.dlq");
     }
 
     // ---------- 延迟交换机（需要 broker 安装 rabbitmq_delayed_message_exchange 插件） ----------

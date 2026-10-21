@@ -37,6 +37,22 @@ public class VideoProgress {
     @TableField("finished")
     private Boolean finished;
 
+    /**
+     * 完课事件是否已经成功发送。
+     * <p>★0 表示“进度已完成，但积分事件没发出去”，由定时任务补偿重发；
+     * 消费端按 {@code userId:videoId} 幂等，重发不会重复加积分。</p>
+     */
+    @TableField("finish_event_sent")
+    private Boolean finishEventSent;
+
+    /**
+     * 首次上报时间。
+     * <p>★防刷要按"从第一次上报到现在总共过了多久"算允许的进度，
+     * 只看 last_report_at 会被“每 10 秒报一次小增量”绕过。</p>
+     */
+    @TableField("first_report_at")
+    private LocalDateTime firstReportAt;
+
     /** 上次上报时间（防刷速率校验：进度增量不得超过真实耗时过多） */
     @TableField("last_report_at")
     private LocalDateTime lastReportAt;

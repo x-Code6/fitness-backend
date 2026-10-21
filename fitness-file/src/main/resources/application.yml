@@ -1,0 +1,55 @@
+# 文件服务配置（图片上传 + 本地磁盘静态读取）
+# 中间件全在测试 VM（192.168.150.105）上跑，所以 ${} 默认值就是 VM 的地址；
+# 换环境给进程设环境变量（DB_HOST / NACOS_ADDR / FILE_UPLOAD_ROOT），不要改默认值。
+server:
+  port: 8108
+
+spring:
+  application:
+    name: fitness-file
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://${DB_HOST:192.168.150.105}:${DB_PORT:3306}/yd_file?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: ${DB_USER:root}
+    password: ${DB_PASS:123456}
+  cloud:
+    nacos:
+      discovery:
+        server-addr: ${NACOS_ADDR:192.168.150.105:8848}
+  # multipart 上限：容器层必须 ≥ 业务层的 2MB
+  # ★只有业务层判断的话，Spring 会先把整个请求体读完（大文件撑内存/磁盘）；
+  #   只有容器层的话，超限抛 MaxUploadSizeExceededException，用户看到的是"系统繁忙"
+  #   而不是"图片不能超过 2MB"。两层同时存在，提示才准确、资源才安全
+  servlet:
+    multipart:
+      max-file-size: 2MB
+      max-request-size: 4MB      # 一次只传一张，留一倍余量给表单其他字段
+
+# 图片落盘配置
+file:
+  # 上传根目录。相对路径是相对于<b>进程启动目录</b>，不是项目目录——
+  # 换启动方式（IDE / jar / 容器）就会落到不同地方，部署时用绝对路径覆盖
+  upload-root: ${FILE_UPLOAD_ROOT:./uploads}
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+  global-config:
+    banner: false
+
+# 管理端 JWT 验签密钥：必须与 fitness-admin-server 的 admin-jwt.secret 完全一致
+# ★只用于验签，不签发；文件服务不查 admin 表，验签通过即认可管理员身份
+admin-jwt:
+  secret: ${ADMIN_JWT_SECRET:yuedong-admin-jwt-secret-2026-change-me-32bytes}
+
+logging:
+  # 同时写文件：上传失败（磁盘满/权限/DB 异常）需要完整堆栈，控制台滚过去就找不回来
+  file:
+    name: logs/${spring.application.name}.log
+  logback:
+    rollingpolicy:
+      max-file-size: 20MB
+      max-history: 3
+  level:
+    com.yuedong: debug

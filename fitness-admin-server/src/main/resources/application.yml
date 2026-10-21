@@ -21,20 +21,16 @@ spring:
     nacos:
       discovery:
         server-addr: ${NACOS_ADDR:192.168.150.105:8848}
-  # multipart 上限（D19 图片上传）
-  # ★这一层和 FileStorageService 里的 2MB 判断是两层，必须同时存在且容器层 ≥ 业务层：
-  #   只有容器层的话，超限请求抛 MaxUploadSizeExceededException，用户看到的是"系统繁忙"
-  #   而不是"图片不能超过 2MB"；只有业务层的话，Spring 会先把整个请求体读完（大文件撑内存/磁盘）
+  # multipart 上限。图片上传已迁到 fitness-file（那边自己配 2MB/4MB），
+  # 这里保留同一组上限，供管理端后续可能新增的表单文件接口复用，
+  # 避免容器层落回 Spring 默认值（1MB/10MB）时行为不一致。
   servlet:
     multipart:
       max-file-size: 2MB
-      max-request-size: 4MB      # 一次只传一张，留一倍余量给表单其他字段
+      max-request-size: 4MB      # 一次只传一个文件，留一倍余量给表单其他字段
 
-# 图片落盘配置（D19）
-file:
-  # 上传根目录。相对路径是相对于<b>进程启动目录</b>，不是项目目录——
-  # 换启动方式（IDE / jar / 容器）就会落到不同地方，部署时用绝对路径覆盖
-  upload-root: ${FILE_UPLOAD_ROOT:./uploads}
+# ★file.upload-root 已删除：上传目录现在只归 fitness-file 所有。
+#   管理端再保留一份同名配置，会出现"改了这里却没生效"的假配置。
 
 mybatis-plus:
   configuration:
@@ -49,5 +45,14 @@ admin-jwt:
   expire-minutes: 720        # 12 小时
 
 logging:
+  # ★联调期把日志同时写文件。IDEA 运行控制台的内容只在内存里，滚过去就找不回来，
+  #   而"接口只返回 50000 系统繁忙"这类排查必须看到完整堆栈——写了文件就能直接 grep。
+  #   路径相对各服务的工作目录（IDEA 里是模块根目录下的 logs/），已加进 .gitignore。
+  file:
+    name: logs/${spring.application.name}.log
+  logback:
+    rollingpolicy:
+      max-file-size: 20MB
+      max-history: 3
   level:
     com.yuedong: debug

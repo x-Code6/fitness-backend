@@ -29,6 +29,10 @@ public class Gift {
     @TableField("stock")
     private Integer stock;
 
+    /** 商品图访问路径（/uploads/gift/xxx.png），空表示前端用图标兜底 */
+    @TableField("image")
+    private String image;
+
     /** 1 上架 / 0 下架 */
     @TableField("status")
     private Integer status;

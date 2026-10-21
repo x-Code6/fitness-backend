@@ -82,7 +82,13 @@ public class BookingDetailVO {
 
     private BigDecimal payAmount;
 
+    /** 累计已退款金额；0 = 没退过，部分退款时订单仍是 PAID */
+    private BigDecimal refundAmount;
+
     private String payAmountText;
+
+    /** 退款展示串，如 "¥75.00"；没退过为 null */
+    private String refundAmountText;
 
     private String couponTitle;
 

@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS t_points_log (
     title      VARCHAR(50) NOT NULL COMMENT '流水标题，直接给前端展示，如"每日打卡""完课奖励"',
     points     INT         NOT NULL COMMENT '变动值，★正加负减（一张表同时记收支，靠符号区分）',
     biz_type   VARCHAR(20) NOT NULL COMMENT 'CHECKIN 打卡 / COURSE_FINISHED 完课 / EXCHANGE 兑换 / ADMIN 后台调整',
-    biz_id     VARCHAR(64) NULL COMMENT '★业务幂等 id。打卡=日期串"2026-10-13"；完课=派生业务键"userId:videoId"（v1 用的是每次新生成的 UUID，导致幂等完全失效，v2 必须改）；兑换=giftId:时间戳',
+    biz_id     VARCHAR(64) NULL COMMENT '★业务幂等 id，必须带 userId。打卡="userId:2026-10-13"；完课="userId:videoId"；兑换="userId:giftId:requestId"。★只写日期会让全站第二个用户撞唯一键、永远加不上分',
     created_at DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '时间',
     PRIMARY KEY (id),
     -- ★幂等的最终防线：Redis SETNX 是快路径，但 Redis 挂了/过期了/并发穿透了，
@@ -41,7 +41,10 @@ CREATE TABLE IF NOT EXISTS t_points_log (
     --   biz_type 必须参与复合键，否则打卡的日期串可能与某个 eventId 相撞而误判。
     UNIQUE KEY uk_biz (biz_type, biz_id),
     -- "积分明细"分页：WHERE user_id=? ORDER BY created_at DESC
-    KEY idx_user (user_id, created_at)
+    KEY idx_user (user_id, created_at),
+    -- 月榜归档：WHERE created_at >= ? AND created_at < ? GROUP BY user_id
+    -- 归档每天补跑一次，没有这条索引就是全表扫
+    KEY idx_created (created_at)
 ) ENGINE = InnoDB COMMENT '积分流水表';
 
 -- ----------------------------------------------------------------
@@ -108,12 +111,12 @@ INSERT INTO t_member_points (user_id, balance, total_checkin, continuous_days) V
 (10001, 320, 12, 3);
 
 INSERT INTO t_points_log (user_id, title, points, biz_type, biz_id, created_at) VALUES
-(10001, '每日打卡', 10, 'CHECKIN', DATE_FORMAT(NOW() - INTERVAL 3 DAY, '%Y-%m-%d'), NOW() - INTERVAL 3 DAY),
-(10001, '每日打卡', 10, 'CHECKIN', DATE_FORMAT(NOW() - INTERVAL 2 DAY, '%Y-%m-%d'), NOW() - INTERVAL 2 DAY),
-(10001, '每日打卡', 10, 'CHECKIN', DATE_FORMAT(NOW() - INTERVAL 1 DAY, '%Y-%m-%d'), NOW() - INTERVAL 1 DAY),
+(10001, '每日打卡', 10, 'CHECKIN', CONCAT('10001:', DATE_FORMAT(NOW() - INTERVAL 3 DAY, '%Y-%m-%d')), NOW() - INTERVAL 3 DAY),
+(10001, '每日打卡', 10, 'CHECKIN', CONCAT('10001:', DATE_FORMAT(NOW() - INTERVAL 2 DAY, '%Y-%m-%d')), NOW() - INTERVAL 2 DAY),
+(10001, '每日打卡', 10, 'CHECKIN', CONCAT('10001:', DATE_FORMAT(NOW() - INTERVAL 1 DAY, '%Y-%m-%d')), NOW() - INTERVAL 1 DAY),
 (10001, '完课奖励', 30, 'COURSE_FINISHED', '10001:1', NOW() - INTERVAL 2 DAY),
 (10001, '完课奖励', 30, 'COURSE_FINISHED', '10001:3', NOW() - INTERVAL 1 DAY),
-(10001, '兑换扣减', -200, 'EXCHANGE', '1:1760000000000', NOW() - INTERVAL 5 DAY);
+(10001, '兑换扣减', -200, 'EXCHANGE', '10001:1:1760000000000', NOW() - INTERVAL 5 DAY);
 
 -- 打卡记录（与上面的 CHECKIN 流水对得上）
 INSERT INTO t_checkin_record (user_id, check_date, created_at) VALUES

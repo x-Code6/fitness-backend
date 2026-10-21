@@ -62,8 +62,14 @@ public class BookingVO {
     /** 实付金额 */
     private BigDecimal payAmount;
 
+    /** 累计已退款金额；0 = 没退过，部分退款时订单仍是 PAID */
+    private BigDecimal refundAmount;
+
     /** 实付展示串，如 "¥68.00" */
     private String payAmountText;
+
+    /** 退款展示串，如 "¥75.00"；没退过为 null */
+    private String refundAmountText;
 
     /** 原价展示串，秒杀单要显示划线价 */
     private String originalAmountText;

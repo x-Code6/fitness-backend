@@ -4,6 +4,7 @@
 
   模块划分：
   ├── fitness-common    公共模块（统一响应/异常/JWT工具/用户上下文）
+  ├── fitness-file      文件服务（图片上传/落盘校验/静态图片读取）
   ├── fitness-gateway   网关（路由 + JWT 全局校验 + 用户上下文透传）
   ├── fitness-user      用户服务（注册/登录/资料）——P0
   ├── fitness-course    课程服务（课程/缓存/门店GEO/视频/秒杀活动）——P0
@@ -28,6 +29,8 @@
     <!-- 子模块：4 个 api 模块放各自业务服务前面，保证构建顺序正确 -->
     <modules>
         <module>fitness-common</module>
+        <!-- 文件服务：图片上传落盘 + 静态读取，管理端与用户端共用一套落盘规则 -->
+        <module>fitness-file</module>
         <module>fitness-user-api</module>
         <module>fitness-course-api</module>
         <module>fitness-order-api</module>
@@ -129,6 +132,19 @@
                     <version>3.13.0</version>
                     <configuration>
                         <release>17</release>
+                        <!-- ★★ 必须开 -parameters。本项目的父 POM 不是 spring-boot-starter-parent
+                             （下面用 dependencyManagement 导入 BOM），而"-parameters 由父 POM 默认打开"
+                             这件事只存在于 starter-parent 里。少了它，方法参数名不进字节码，
+                             Spring MVC 就无法给没有写 value 的 @RequestParam / @PathVariable 推断名字，
+                             请求期直接抛 IllegalArgumentException：
+                             "Name for argument of type [int] not specified, and parameter name
+                             information not found via reflection"。
+                             症状极具迷惑性：不带参数的接口全好，带任何一个 @RequestParam 的接口全 500，
+                             而全局异常处理器把它糊成"50000 系统繁忙"——
+                             本次联调 14 个接口报"系统繁忙"（课程列表/详情、凭证、预约、订单、
+                             消息列表、身体记录、热度榜…）全是这一个原因，和数据无关，
+                             用"返回零行仍然报错"就能确认。 -->
+                        <parameters>true</parameters>
                         <annotationProcessorPaths>
                             <path>
                                 <groupId>org.projectlombok</groupId>

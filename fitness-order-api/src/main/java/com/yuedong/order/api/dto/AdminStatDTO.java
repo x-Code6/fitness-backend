@@ -1,7 +1,9 @@
 package com.yuedong.order.api.dto;
 
+import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -20,6 +22,8 @@ import java.util.List;
  */
 @Data
 @Builder
+@NoArgsConstructor
+@AllArgsConstructor
 public class AdminStatDTO {
 
     /** 今日下单数（含未支付：运营要看"下了多少单"） */

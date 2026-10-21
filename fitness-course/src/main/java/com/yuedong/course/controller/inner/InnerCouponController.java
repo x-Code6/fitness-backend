@@ -62,10 +62,11 @@ public class InnerCouponController {
         return Result.ok(couponService.use(recordId, userId, orderNo));
     }
 
-    /** 退券（订单取消/超时回退为未使用） */
+    /** 退券（订单取消/超时回退为未使用）。★必须带订单号，避免误退别的订单上的用券 */
     @PostMapping("/refund")
-    public Result<Boolean> refund(@RequestParam Long recordId) {
-        return Result.ok(couponService.refund(recordId));
+    public Result<Boolean> refund(@RequestParam Long recordId,
+                                  @RequestParam String orderNo) {
+        return Result.ok(couponService.refund(recordId, orderNo));
     }
 
     /** 管理端：券分页 */

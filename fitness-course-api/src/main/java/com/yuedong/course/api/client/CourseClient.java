@@ -60,4 +60,11 @@ public interface CourseClient {
     /** 秒杀建单成功后扣减 DB 侧份数（Redis 已在 Lua 里先行扣减） */
     @PostMapping("/inner/course/seckill/deduct")
     Result<Boolean> deductRemain(@RequestParam("activityId") Long activityId);
+
+    /**
+     * 订单取消/超时/建单失败时回补 DB 侧份数。
+     * <p>★Redis 和 DB 两个账本都要回补；只回补 Redis 会让 DB 名额永久少卖。</p>
+     */
+    @PostMapping("/inner/course/seckill/restore")
+    Result<Boolean> restoreRemain(@RequestParam("activityId") Long activityId);
 }

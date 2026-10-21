@@ -12,15 +12,10 @@ public final class MqConstants {
     }
 
     // ==================== RabbitMQ：订单域（order 服务） ====================
-
-    /** 秒杀异步建单交换机（direct，削峰） */
-    public static final String ORDER_SECKILL_EXCHANGE = "ex.order.seckill";
-
-    /** 秒杀建单队列 */
-    public static final String ORDER_SECKILL_CREATE_QUEUE = "q.order.seckill.create";
-
-    /** 秒杀建单路由键 */
-    public static final String ORDER_SECKILL_CREATE_KEY = "seckill.create";
+    // ★秒杀不再走"异步建单"，所以这里没有 ex.order.seckill 那组资源了：
+    //   提交时订单已经同步落库，没有任何事需要一条消息去驱动建单。
+    //   常量删干净是有意的——留着没生产者的拓扑名，下一次改队列参数时
+    //   会误以为"这条队列还在用"，进而做出错误的兼容处理。
 
     /** 订单延迟交换机（x-delayed-message 插件，15 分钟未支付自动取消） */
     public static final String ORDER_DELAY_EXCHANGE = "ex.order.delay";
@@ -31,14 +26,8 @@ public final class MqConstants {
     /** 订单超时路由键 */
     public static final String ORDER_TIMEOUT_KEY = "order.timeout";
 
-    /** 订单死信交换机（秒杀建单消费异常兜底） */
+    /** 订单死信交换机（消费失败兜底，见下面两条 DLQ） */
     public static final String ORDER_DLX = "ex.order.dlx";
-
-    /** 秒杀建单死信队列 */
-    public static final String ORDER_SECKILL_DLQ = "q.order.seckill.dlq";
-
-    /** 秒杀死信路由键 */
-    public static final String ORDER_DLQ_KEY = "order.dlq";
 
     /**
      * 延迟取消队列的死信队列（P0-10）。

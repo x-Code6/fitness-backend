@@ -52,4 +52,14 @@ public class BookingCreateDTO {
 
     /** 使用的持券记录 id（{@code t_user_coupon.id}），不用券就不传 */
     private Long couponRecordId;
+
+    /**
+     * 秒杀活动 id。传了就是秒杀单：份数强制 1、不允许带券、价格取活动价，
+     * 并在提交那一刻做"库存 + 一人一单"的原子扣减。
+     *
+     * <p>★秒杀单也要带 {@code orderNo}（来自带 activityId 的 preview），
+     * 一次性令牌这件事对两条路完全一样——这就是"点下单才真抢购"的实现方式：
+     * 试算与进页面不占库存，提交才占。</p>
+     */
+    private Long activityId;
 }

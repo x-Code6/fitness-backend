@@ -81,4 +81,20 @@ public class CouponSaveDTO {
 
     /** 1 上架 / 0 下架。★编辑时必须带上，否则编辑一次就把上架中的券悄悄下架了 */
     private Integer status;
+
+    // ===== 活动页（Banner）=====
+    private Boolean bannerEnabled;
+
+    private String bannerImageUrl;
+
+    private String bannerTitle;
+
+    private String bannerSubtitle;
+
+    private Integer bannerSort;
+
+    /** 可选覆盖；空则默认跟随领取窗口 */
+    private String bannerStartTime;
+
+    private String bannerEndTime;
 }

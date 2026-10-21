@@ -60,13 +60,29 @@ public interface EntitlementService {
     boolean isOrderFinished(String orderNo);
 
     /**
+     * 一批凭证各自的<b>"已约未上"节数</b>（占用中）。
+     *
+     * <p>★凡是判"这张凭证还能不能约"的地方都要先拿这个数，否则凭证在"约了还没上"的
+     * 那段时间里会被当成满额可用。一次 GROUP BY 拿完整批，绝不循环查库。</p>
+     *
+     * @return 凭证 id → 待上节数。<b>没有待上课程的 id 不出现在结果里</b>，
+     *         调用方按"缺失即 0"处理（和评分统计那个接口同一套约定，别在这里塞 0 值）
+     */
+    Map<Long, Integer> pendingCounts(java.util.Collection<Long> entitlementIds);
+
+    /**
      * 实体 → VO。<b>公开这一个转换是为了让订单详情复用同一份字段口径</b>
-     * （剩余次数、有效期文案、canBook、subTitle 的算法只有一处）。
+     * （剩余次数、占用提示、canBook、subTitle 的算法只有一处）。
+     *
      * <p>★不公开的话，订单详情要么自己再拼一遍 VO（两处字段迟早分叉），
      * 要么把实体直接吐给前端（会漏出 status 之外的内部字段）。
      * 转换方法放服务里对外暴露，是这两个坏选择之外的第三条路。</p>
+     *
+     * @param pendingTimes 这张凭证当前挂着几节待上的课。★由
+     *                     {@link #pendingCounts} 提供，不在这里自己查库——
+     *                     否则循环里转 VO 就成了 N+1。
      */
-    EntitlementVO toVO(Entitlement entitlement);
+    EntitlementVO toVO(Entitlement entitlement, int pendingTimes);
 
     /**
      * 过期扫描（每小时由定时任务调用）：ACTIVE 且已过 valid_until 的凭证置 EXPIRED，

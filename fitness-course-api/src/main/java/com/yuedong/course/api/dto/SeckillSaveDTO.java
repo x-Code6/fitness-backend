@@ -32,4 +32,20 @@ public class SeckillSaveDTO {
     /** 结束时间 */
     @NotBlank(message = "结束时间不能为空")
     private String endTime;
+
+    // ===== 活动页（Banner）=====
+    private Boolean bannerEnabled;
+
+    private String bannerImageUrl;
+
+    private String bannerTitle;
+
+    private String bannerSubtitle;
+
+    private Integer bannerSort;
+
+    /** 可选覆盖；空则默认跟随秒杀活动起止 */
+    private String bannerStartTime;
+
+    private String bannerEndTime;
 }

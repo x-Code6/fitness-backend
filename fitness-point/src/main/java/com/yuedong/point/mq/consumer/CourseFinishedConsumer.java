@@ -50,7 +50,9 @@ public class CourseFinishedConsumer {
     private final ObjectMapper objectMapper;
     private final NotifyPublisher notifyPublisher;
 
-    @RabbitListener(queues = MqConstants.POINT_COURSE_FINISHED_QUEUE)
+    // ★ackMode=MANUAL：自己 ack 就必须声明手动，否则容器 AUTO 会重复 ack，
+    //   broker 以 unknown delivery tag 关信道，完课发积分这条链路会反复断流
+    @RabbitListener(queues = MqConstants.POINT_COURSE_FINISHED_QUEUE, ackMode = "MANUAL")
     public void onMessage(String json, Message message, Channel channel) throws IOException {
         long deliveryTag = message.getMessageProperties().getDeliveryTag();
 
@@ -64,15 +66,27 @@ public class CourseFinishedConsumer {
             return;
         }
 
-        String eventId = String.valueOf(event.get("eventId"));
-        Long userId = ((Number) event.get("userId")).longValue();
-        String videoTitle = String.valueOf(event.getOrDefault("videoTitle", ""));
-        int points = ((Number) event.getOrDefault("points", 30)).intValue();
-
+        // 解析失败的消息重投一百次也还是坏消息 → 直接进死信。
+        // 字段读取放在下面的 try 里：缺 userId/类型不对时也应该 nack，而不是逃出监听方法。
+        String idempotentKey = null;
         try {
-            // ===== 第 2 步：Redis 先挡一道（省一次 DB 写），真正的防线是下一条里的唯一索引 =====
+            // 缺字段/类型不对 = 坏消息，直接抛到 catch 里进死信；
+            // 不能让 String.valueOf(null) 变成字符串 "null"，否则所有坏消息会共用同一个幂等键。
+            Object eventIdValue = event.get("eventId");
+            Object userIdValue = event.get("userId");
+            if (eventIdValue == null || userIdValue == null) {
+                throw new IllegalArgumentException("完课事件缺少 eventId 或 userId");
+            }
+            String eventId = String.valueOf(eventIdValue);
+            Long userId = ((Number) userIdValue).longValue();
+            String videoTitle = String.valueOf(event.getOrDefault("videoTitle", ""));
+            int points = ((Number) event.getOrDefault("points", 30)).intValue();
+            idempotentKey = "idempotent:msg:" + eventId;
+
+            // ===== 第 2 步：Redis 快路径（省一次 DB 写），真正的防线是 t_points_log.uk_biz =====
+            // ★这个 key 必须在"入账失败"时删掉，否则重投会被误判成重复、直接 ack。
             Boolean first = redis.opsForValue().setIfAbsent(
-                    "idempotent:msg:" + eventId, "1", Duration.ofHours(24));
+                    idempotentKey, "1", Duration.ofHours(24));
             if (!Boolean.TRUE.equals(first)) {
                 log.info("完课事件重复，跳过: eventId={}", eventId);
                 channel.basicAck(deliveryTag, false);
@@ -90,20 +104,34 @@ public class CourseFinishedConsumer {
                 return;
             }
 
-            // ===== 第 4 步：入账成功后才动榜和发通知（口径与打卡完全一致）=====
-            redis.opsForZSet().incrementScore(
-                    RedisKeyConstants.rankMonth(LocalDate.now().format(MONTH_FMT)),
-                    String.valueOf(userId), points);
+            // ===== 第 4 步：入账成功后才动榜和发通知 =====
+            // ★榜/通知是旁路：失败只记日志，不能把已经成功入账的消息再 nack 重投，
+            //   否则消息会进死信，而积分其实已经到账。
+            try {
+                redis.opsForZSet().incrementScore(
+                        RedisKeyConstants.rankMonth(LocalDate.now().format(MONTH_FMT)),
+                        String.valueOf(userId), points);
+            } catch (Exception e) {
+                log.error("完课积分已入账，但月榜加分失败，等待后续对账: userId={}", userId, e);
+            }
             notifyPublisher.publishPointNotify(userId, "积分到账",
                     "完成跟练「" + videoTitle + "」+" + points + " 积分已到账。");
 
             channel.basicAck(deliveryTag, false);
             log.info("完课积分已发放: userId={}, points={}", userId, points);
         } catch (Exception e) {
-            // ★requeue=false：处理失败的消息如果重新入队，会被立刻再投回来，
-            //   一条持续失败的消息能把消费者线程打满（P0-10 的"毒消息"）。
-            //   现在这条队列挂了 DLX，失败的消息落在死信队列里，看得见也可以人工重投
-            log.error("完课事件处理失败，进死信: eventId={}", eventId, e);
+            // ★入账失败（DB 异常/字段缺失）：删掉快路径 key，让消息重投时还能再试；
+            //   requeue=false 让它进死信，避免毒消息立刻回到队头打满消费者线程。
+            if (idempotentKey != null) {
+                try {
+                    redis.delete(idempotentKey);
+                } catch (Exception deleteError) {
+                    // Redis 也挂了时，不能因为删 key 失败就跳过 nack；
+                    // 这条消息进死信，人工重投前再清 key。
+                    log.error("完课事件失败后清理幂等 key 失败: key={}", idempotentKey, deleteError);
+                }
+            }
+            log.error("完课事件处理失败，进死信: eventId={}", idempotentKey, e);
             channel.basicNack(deliveryTag, false, false);
         }
     }

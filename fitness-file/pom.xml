@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  文件服务：图片上传 + 本地磁盘落盘 + /uploads/** 静态读取 + t_file 元数据。
+
+  ★为什么要有独立模块：上传的写入口有两类调用方（管理端后台、App 用户），
+  如果继续挂在 admin-server，用户头像/动态配图就必须拿管理端 JWT，权限模型是错的。
+  独立成服务后，写入口按调用方拆成 /file/admin/** 与 /file/user/** 两套认证。
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.yuedong</groupId>
+        <artifactId>fitness-backend</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>fitness-file</artifactId>
+    <name>fitness-file</name>
+
+    <dependencies>
+        <!-- Web MVC：multipart 上传与静态资源映射 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <!-- 参数校验：分类/分页参数在入口先挡一层 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.alibaba.cloud</groupId>
+            <artifactId>spring-cloud-starter-alibaba-nacos-discovery</artifactId>
+        </dependency>
+        <!-- MyBatis-Plus：t_file 元数据读写 -->
+        <dependency>
+            <groupId>com.baomidou</groupId>
+            <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.mysql</groupId>
+            <artifactId>mysql-connector-j</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.yuedong</groupId>
+            <artifactId>fitness-common</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!--
+          管理端 JWT 验签三件套（版本由父 pom 统一管理）。
+          api 编译期使用；impl/jackson 只在运行期需要，所以标 runtime。
+          ★这里不查 admin 表：token 已由 admin-server 用同一密钥签名，
+          验签通过即可确认管理员身份，文件服务不复制管理端用户库。
+        -->
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-api</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-impl</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-jackson</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>

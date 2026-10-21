@@ -1,7 +1,9 @@
 package com.yuedong.course.model.vo;
 
+import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -29,6 +31,15 @@ import java.util.List;
  */
 @Data
 @Builder
+/*
+ * ★这两个构造器看着多余，实际是给"缓存回读"兜底的：本 VO 会被序列化成 JSON 存进
+ * course:detail:{id}，下次请求再由 Jackson 反序列化回来。只写 @Builder 时 Lombok 只生成
+ * 一个全参构造器，Jackson 能否用它<b>取决于编译期有没有 -parameters</b>（父 POM 不是
+ * spring-boot-starter-parent，这个开关必须自己配）。补上无参构造器后，
+ * 缓存格式就不再和一个编译参数绑在一起了。
+ */
+@NoArgsConstructor
+@AllArgsConstructor
 public class CourseVO {
 
     private Long id;
@@ -137,14 +148,22 @@ public class CourseVO {
 
     /**
      * 门店下拉项（详情页"在哪家店买"）。
+     *
+     * <p>★这个列表由 {@code CourseServiceImpl#withStoreContext} 每次请求现查填充，
+     * <b>不进 30 分钟的课程详情缓存</b>——门店配课是管理端随时会改的，
+     * 缓存里那份会让用户看到"已停售的店还能选"。</p>
      */
     @Data
     @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
     public static class StoreOption {
         private Long storeId;
         private String storeName;
         /** 该店是否仍在可售窗口内（停售的显示为不可选，而不是隐藏，避免用户以为课程坏了） */
         private Boolean onSale;
+        /** 营业时间文案，来自 t_store.open_hours_text；前端在可选中那行显示 */
+        private String openHoursText;
     }
 
     /**
@@ -152,6 +171,8 @@ public class CourseVO {
      */
     @Data
     @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
     public static class SeckillInfo {
         private Long activityId;
         /** 秒杀价数值 */

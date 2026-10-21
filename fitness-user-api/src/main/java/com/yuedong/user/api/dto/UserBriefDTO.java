@@ -20,4 +20,7 @@ public class UserBriefDTO {
 
     /** 头像配色下标 */
     private String avatarColor;
+
+    /** 头像图片路径；为空时用 avatarColor 渐变 */
+    private String avatarImage;
 }

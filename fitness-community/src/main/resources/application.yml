@@ -49,5 +49,14 @@ community:
   view-flush-delay-ms: 30000
 
 logging:
+  # ★联调期把日志同时写文件。IDEA 运行控制台的内容只在内存里，滚过去就找不回来，
+  #   而"接口只返回 50000 系统繁忙"这类排查必须看到完整堆栈——写了文件就能直接 grep。
+  #   路径相对各服务的工作目录（IDEA 里是模块根目录下的 logs/），已加进 .gitignore。
+  file:
+    name: logs/${spring.application.name}.log
+  logback:
+    rollingpolicy:
+      max-file-size: 20MB
+      max-history: 3
   level:
     com.yuedong: debug

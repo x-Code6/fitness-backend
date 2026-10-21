@@ -113,4 +113,15 @@ public class BookingPreviewVO {
     private String ruleSummary;
 
     private List<String> ruleTexts;
+
+    // ==================== 秒杀态（★份数与选券两个控件由这三个字段决定要不要显示）====================
+
+    /** 秒杀活动 id。非 null = 这一单是秒杀单，提交时要原样带回 */
+    private Long activityId;
+
+    /** 是否秒杀单。前端据此把份数锁成 1、把选券入口整行隐藏 */
+    private Boolean seckill;
+
+    /** 活动结束时间（毫秒）。确认页倒计时用；到点后提交会被服务端拒掉 */
+    private Long seckillEndTime;
 }

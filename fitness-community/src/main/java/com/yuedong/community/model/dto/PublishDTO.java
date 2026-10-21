@@ -4,6 +4,8 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
 
+import java.util.List;
+
 /**
  * 发布动态请求参数。
  */
@@ -24,7 +26,10 @@ public class PublishDTO {
      */
     private String visibility;
 
-    /** 配图相对路径 csv。一期管理端上传能力接入后才可用，为空即纯文本动态 */
-    @Size(max = 200, message = "配图过多")
-    private String images;
+    /**
+     * 配图访问路径列表（先调 /file/user/upload/image 上传，再把返回的 url 放进来）。
+     * 为空即纯文本动态；落库存 csv，读出来再拆成列表。
+     */
+    @Size(max = 9, message = "最多上传 9 张配图")
+    private List<@Size(max = 100, message = "配图路径过长") String> images;
 }

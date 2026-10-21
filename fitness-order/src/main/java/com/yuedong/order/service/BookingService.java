@@ -47,18 +47,31 @@ public interface BookingService {
      * @param quantity       份数，null 按 1；超过上限直接报错（不静默截断）
      * @param couponRecordId 选中的券，null = 不用券
      */
-    BookingPreviewVO preview(Long userId, Long courseId, Long storeId, Integer quantity, Long couponRecordId);
+    /**
+     * 下单页试算。
+     *
+     * @param activityId 秒杀活动 id；<b>传了就是秒杀态</b>——份数锁 1、不能用券、价格取活动价。
+     *                   普通购买传 null。★试算只读，不扣任何库存。
+     */
+    BookingPreviewVO preview(Long userId, Long courseId, Long storeId, Integer quantity,
+                             Long couponRecordId, Long activityId);
 
     /**
-     * 我的订单列表。
+     * 我的订单列表（分页）。
      *
      * <p>★参数叫 {@code tab} 而不是 {@code status} 是有原因的：
      * 前五个 tab 能直接落到订单轴上，但"待使用/已预约/待评价/已过期"
      * <b>跨三条轴</b>，必须由凭证与预约的数据参与筛。
      * 取值：ALL / UNPAID / PAID / CANCELED / REFUNDED /
      * WAIT_USE / BOOKED / FINISHED / TO_RATE / EXPIRED。</p>
+     *
+     * <p>★简单 tab 直接在数据库分页；跨轴 tab 先取该用户的候选订单，
+     * 在内存里按三轴过滤后再切页。后者的 total 是过滤后的真实条数。</p>
+     *
+     * @param page 页码，从 1 开始
+     * @param size 每页条数，服务端上限 50
      */
-    List<BookingVO> list(Long userId, String tab);
+    PageDTO<BookingVO> list(Long userId, String tab, Integer page, Integer size);
 
     /** 订单详情（嵌凭证与其下的预约记录） */
     BookingDetailVO detail(Long userId, String orderNo);

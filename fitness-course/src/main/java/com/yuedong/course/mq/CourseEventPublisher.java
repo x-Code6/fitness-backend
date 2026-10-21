@@ -32,7 +32,7 @@ public class CourseEventPublisher {
      * @param videoId   视频 id
      * @param videoTitle 视频标题（积分明细里展示用）
      */
-    public void publishCourseFinished(Long userId, Long videoId, String videoTitle) {
+    public boolean publishCourseFinished(Long userId, Long videoId, String videoTitle) {
         try {
             Map<String, Object> event = new HashMap<>();
             // ★★★P0-3 的核心一行：eventId 必须是<b>业务键</b>而不是 UUID。
@@ -53,9 +53,13 @@ public class CourseEventPublisher {
                     MqConstants.COURSE_FINISHED_KEY,
                     json);
             log.info("完课事件已发布: userId={}, videoId={}", userId, videoId);
+            return true;
         } catch (Exception e) {
             log.error("完课事件发布失败: userId={}, videoId={}", userId, videoId, e);
-            // 发布失败不抛出——进度已落库，可由后续对账任务补偿（演示项目从简）
+            // ★发布失败不抛出，但必须把 false 返回给调用方：
+            //   调用方会保留 t_video_progress.finish_event_sent=0，
+            //   由 VideoFinishEventRetryTask 定时重发。
+            return false;
         }
     }
 }

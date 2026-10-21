@@ -1,5 +1,6 @@
 package com.yuedong.order.controller;
 
+import com.yuedong.common.model.PageDTO;
 import com.yuedong.common.result.Result;
 import com.yuedong.common.util.UserContext;
 import com.yuedong.order.model.dto.BookingCreateDTO;
@@ -17,8 +18,6 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-
-import java.util.List;
 
 /**
  * 购买订单接口（需登录）。
@@ -54,10 +53,15 @@ public class BookingController {
      */
     @GetMapping("/preview")
     public Result<BookingPreviewVO> preview(@RequestParam Long courseId,
-                                            @RequestParam Long storeId,
+                                            @RequestParam(required = false) Long storeId,
                                             @RequestParam(required = false, defaultValue = "1") Integer quantity,
-                                            @RequestParam(required = false) Long couponRecordId) {
-        return Result.ok(bookingService.preview(UserContext.getUserId(), courseId, storeId, quantity, couponRecordId));
+                                            @RequestParam(required = false) Long couponRecordId,
+                                            @RequestParam(required = false) Long activityId) {
+        // ★storeId 改成可选：秒杀态的门店由活动决定（抢的就是这家店的名额），
+        //   秒杀列表里并不带 storeId，硬要前端传等于逼它去猜。
+        //   普通态仍然必须有门店——服务层会拦，不在这里放开成"谁都能不传"。
+        return Result.ok(bookingService.preview(UserContext.getUserId(), courseId, storeId,
+                quantity, couponRecordId, activityId));
     }
 
     /**
@@ -65,9 +69,19 @@ public class BookingController {
      *
      * @param tab ALL/UNPAID/PAID/CANCELED/REFUNDED/WAIT_USE/BOOKED/FINISHED/TO_RATE/EXPIRED
      */
+    /**
+     * 我的订单列表（分页）。
+     *
+     * @param tab  ALL / UNPAID / PAID / CANCELED / REFUNDED /
+     *             WAIT_USE / BOOKED / FINISHED / TO_RATE / EXPIRED
+     * @param page 页码，从 1 开始
+     * @param size 每页条数，默认 10，服务端上限 50
+     */
     @GetMapping("/list")
-    public Result<List<BookingVO>> list(@RequestParam(required = false) String tab) {
-        return Result.ok(bookingService.list(UserContext.getUserId(), tab));
+    public Result<PageDTO<BookingVO>> list(@RequestParam(required = false) String tab,
+                                          @RequestParam(defaultValue = "1") Integer page,
+                                          @RequestParam(defaultValue = "10") Integer size) {
+        return Result.ok(bookingService.list(UserContext.getUserId(), tab, page, size));
     }
 
     /** 订单详情（含嵌套凭证与其下的预约记录） */

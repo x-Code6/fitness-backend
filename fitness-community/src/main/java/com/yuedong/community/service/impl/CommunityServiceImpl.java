@@ -35,6 +35,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
@@ -133,9 +134,9 @@ public class CommunityServiceImpl implements CommunityService {
      * 所以 SQL 里写死 {@code visibility = 'PUBLIC'}，不给它进这一流的机会。</p>
      */
     private FeedResultVO recommendFeed(int pageSize, String cursor, Long userId) {
-        double lastScore = cursor == null || cursor.isBlank()
-                ? PostMapper.FIRST_PAGE_SCORE : decodeScoreCursor(cursor);
-        List<PostScoreRow> rows = postMapper.selectRecommendPage(lastScore, RECOMMEND_RECENT_DAYS, pageSize + 1);
+        ScoreCursor pageCursor = decodeScoreCursor(cursor);
+        List<PostScoreRow> rows = postMapper.selectRecommendPage(
+                pageCursor.getScore(), pageCursor.getPostId(), RECOMMEND_RECENT_DAYS, pageSize + 1);
         boolean hasMore = rows.size() > pageSize;
         List<PostScoreRow> page = hasMore ? rows.subList(0, pageSize) : rows;
         if (page.isEmpty()) {
@@ -267,9 +268,12 @@ public class CommunityServiceImpl implements CommunityService {
             return emptyFeed("点赞", "还没有赞过动态。");
         }
         List<Long> postIds = page.stream().map(PostLike::getPostId).toList();
-        // 作者删掉的动态在这里<b>直接过滤</b>（评论那边要留占位，是因为有父子结构；这里没有）
+        // 作者删掉的动态直接过滤；★还要再判一次可见性：
+        // 点赞时是 FRIEND/互关，取关之后这条动态就不该继续出现在“我的点赞”里。
         List<Post> posts = orderByIds(loadByIds(postIds).stream()
-                .filter(p -> p.getStatus() == 1).toList(), postIds);
+                .filter(p -> p.getStatus() == 1)
+                .filter(p -> canView(p, userId))
+                .toList(), postIds);
         return FeedResultVO.builder()
                 .list(assemble(posts, userId))
                 .nextCursor(hasMore ? String.valueOf(page.get(page.size() - 1).getId()) : null)
@@ -295,8 +299,11 @@ public class CommunityServiceImpl implements CommunityService {
             return emptyFeed("收藏", "还没有收藏过动态。");
         }
         List<Long> postIds = page.stream().map(PostCollect::getPostId).toList();
+        // 同“我的点赞”：删掉的、以及不再对自己可见的动态都要过滤
         List<Post> posts = orderByIds(loadByIds(postIds).stream()
-                .filter(p -> p.getStatus() == 1).toList(), postIds);
+                .filter(p -> p.getStatus() == 1)
+                .filter(p -> canView(p, userId))
+                .toList(), postIds);
         return FeedResultVO.builder()
                 .list(assemble(posts, userId))
                 .nextCursor(hasMore ? String.valueOf(page.get(page.size() - 1).getId()) : null)
@@ -330,7 +337,7 @@ public class CommunityServiceImpl implements CommunityService {
         post.setUserName(user != null ? user.getNickname() : "悦动同学");
         post.setAvatarColor(user != null && user.getAvatarColor() != null ? user.getAvatarColor() : "0");
         post.setContent(dto.getContent().trim());
-        post.setImages(dto.getImages() == null ? "" : dto.getImages().trim());
+        post.setImages(joinImages(dto.getImages()));
         post.setTopic(dto.getTopic() == null || dto.getTopic().isBlank() ? "打卡日常" : dto.getTopic().trim());
         post.setVisibility(visibility);
         post.setLikeCount(0);
@@ -372,6 +379,7 @@ public class CommunityServiceImpl implements CommunityService {
     // 点赞 / 收藏：结构完全对称，两张表（docs 4.12 的"不合并"裁定）
     // =====================================================================
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public LikeResultVO like(Long userId, Long postId) {
         requireLogin(userId);
         Post post = loadExisting(postId);
@@ -383,9 +391,13 @@ public class CommunityServiceImpl implements CommunityService {
 
         boolean liked;
         if (existed != null) {
-            // 已点赞 → 取消：删关系行 + 计数 -1，两步同库同事务（MyBatis-Plus 单连接，无需分布式事务）
-            postLikeMapper.deleteById(existed.getId());
-            postMapper.changeLikeCount(postId, -1);
+            // 已点赞 → 取消：删关系行 + 计数 -1，两步同库同事务。
+            // ★只有真的删掉 1 行才减计数：并发双击取消时，第二次 delete 返回 0，
+            //   如果还无条件 -1，就会把计数减两次。
+            int deleted = postLikeMapper.deleteById(existed.getId());
+            if (deleted > 0) {
+                postMapper.changeLikeCount(postId, -1);
+            }
             liked = false;
         } else {
             PostLike like = new PostLike();
@@ -411,6 +423,7 @@ public class CommunityServiceImpl implements CommunityService {
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public CollectResultVO collect(Long userId, Long postId) {
         requireLogin(userId);
         Post post = loadExisting(postId);
@@ -422,8 +435,11 @@ public class CommunityServiceImpl implements CommunityService {
 
         boolean collected;
         if (existed != null) {
-            postCollectMapper.deleteById(existed.getId());
-            postMapper.changeCollectCount(postId, -1);
+            // 同点赞：只有真的删掉关系行才减计数，防止并发双击减两次
+            int deleted = postCollectMapper.deleteById(existed.getId());
+            if (deleted > 0) {
+                postMapper.changeCollectCount(postId, -1);
+            }
             collected = false;
         } else {
             PostCollect collect = new PostCollect();
@@ -528,6 +544,7 @@ public class CommunityServiceImpl implements CommunityService {
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public CommentVO addComment(Long userId, CommentDTO dto) {
         requireLogin(userId);
         // ===== 第 1 步：动态存在且对他可见 =====
@@ -584,6 +601,7 @@ public class CommunityServiceImpl implements CommunityService {
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public void deleteComment(Long userId, Long commentId) {
         requireLogin(userId);
         Comment comment = commentMapper.selectById(commentId);
@@ -593,10 +611,13 @@ public class CommunityServiceImpl implements CommunityService {
         if (!comment.getUserId().equals(userId)) {
             throw new BusinessException(ErrorCode.FORBIDDEN, "只能删除自己的评论");
         }
-        Comment update = new Comment();
-        update.setId(commentId);
-        update.setStatus(0);
-        commentMapper.updateById(update);
+
+        // 改：status 1→0，带 status=1 条件。影响 0 行 = 已被并发请求删过，
+        // 这时不能再减评论数，否则双击删除会把计数减两次。
+        int deleted = commentMapper.softDelete(commentId, userId);
+        if (deleted == 0) {
+            throw new BusinessException(ErrorCode.COMMENT_NOT_FOUND);
+        }
         // ★评论数 -1（GREATEST 兜住负数）；占位仍在列表里，回复链不断
         postMapper.changeCommentCount(comment.getPostId(), -1);
     }
@@ -643,17 +664,51 @@ public class CommunityServiceImpl implements CommunityService {
         }
     }
 
-    /** 推荐流游标：{@code 分数_id}，只用分数（id 只是同分锚点，不参与比较） */
-    private double decodeScoreCursor(String cursor) {
+    /**
+     * 推荐流游标：{@code 分数_id}。
+     * <p>★分数和 id 都要参与下一页比较：只比较分数时，上一页末尾同分的动态
+     * 会在第二页被整批跳过。首页用"分数极大 + id 极大"作为哨兵。</p>
+     */
+    private ScoreCursor decodeScoreCursor(String cursor) {
+        if (cursor == null || cursor.isBlank()) {
+            return ScoreCursor.firstPage();
+        }
         int idx = cursor.lastIndexOf('_');
         if (idx <= 0) {
             log.warn("推荐流游标格式异常，按首页处理: {}", cursor);
-            return PostMapper.FIRST_PAGE_SCORE;
+            return ScoreCursor.firstPage();
         }
         try {
-            return Double.parseDouble(cursor.substring(0, idx));
+            double score = Double.parseDouble(cursor.substring(0, idx));
+            long postId = Long.parseLong(cursor.substring(idx + 1));
+            return new ScoreCursor(score, postId);
         } catch (NumberFormatException e) {
-            return PostMapper.FIRST_PAGE_SCORE;
+            log.warn("推荐流游标格式异常，按首页处理: {}", cursor);
+            return ScoreCursor.firstPage();
+        }
+    }
+
+    /** 推荐流游标的两段值：分数 + 同分时的 post_id 锚点 */
+    private static class ScoreCursor {
+
+        private final double score;
+        private final long postId;
+
+        private ScoreCursor(double score, long postId) {
+            this.score = score;
+            this.postId = postId;
+        }
+
+        private static ScoreCursor firstPage() {
+            return new ScoreCursor(PostMapper.FIRST_PAGE_SCORE, Long.MAX_VALUE);
+        }
+
+        private double getScore() {
+            return score;
+        }
+
+        private long getPostId() {
+            return postId;
         }
     }
 
@@ -671,22 +726,31 @@ public class CommunityServiceImpl implements CommunityService {
      * 列表侧已经按流把 visibility 筛过了，这里只服务"单条"场景（详情、评论、点赞、收藏）。
      */
     private void assertVisible(Post post, Long userId) {
+        if (!canView(post, userId)) {
+            throw new BusinessException(ErrorCode.POST_NOT_VISIBLE);
+        }
+    }
+
+    /**
+     * 单条动态的可见性判断，返回布尔而不是抛异常。
+     * <p>★给“我的点赞/收藏”这类<b>列表过滤</b>用：列表里有一条不可见，
+     * 应该把它过滤掉，而不是让整页 500。单条详情仍然用 {@link #assertVisible}。</p>
+     */
+    private boolean canView(Post post, Long userId) {
         if (VIS_PUBLIC.equals(post.getVisibility())) {
-            return;
+            return true;
         }
         if (userId == null) {
-            throw new BusinessException(ErrorCode.POST_NOT_VISIBLE);
+            return false;
         }
         if (userId.equals(post.getUserId())) {
-            return; // 作者永远看得到自己的
+            return true; // 作者永远看得到自己的
         }
         if (VIS_PRIVATE.equals(post.getVisibility())) {
-            throw new BusinessException(ErrorCode.POST_NOT_VISIBLE);
+            return false;
         }
         // FRIEND：只有和作者互关的人能看
-        if (!followService.isMutualFollow(userId, post.getUserId())) {
-            throw new BusinessException(ErrorCode.POST_NOT_VISIBLE);
-        }
+        return followService.isMutualFollow(userId, post.getUserId());
     }
 
     /** 入参可见性：留空按 PUBLIC，出现别的值直接拒绝（★不能"默认当公开"，那是隐私事故） */
@@ -826,8 +890,7 @@ public class CommunityServiceImpl implements CommunityService {
                 .nickname(p.getUserName())
                 .avatarIdx(parseAvatar(p.getAvatarColor()))
                 .content(p.getContent())
-                .images(p.getImages() == null || p.getImages().isBlank()
-                        ? List.of() : toIntList(p.getImages()))
+                .images(splitImages(p.getImages()))
                 .likes(p.getLikeCount())
                 .liked(likedIds.contains(p.getId()))
                 .collects(p.getCollectCount())
@@ -899,13 +962,31 @@ public class CommunityServiceImpl implements CommunityService {
         return time.format(TIME_FMT);
     }
 
-    private List<Integer> toIntList(String csv) {
-        List<Integer> result = new ArrayList<>();
-        for (String s : csv.split(",")) {
-            try {
-                result.add(Integer.parseInt(s.trim()));
-            } catch (NumberFormatException ignore) {
-                // 脏的下标跳过，不整条报错
+    /** 配图列表 → csv（DB 就一列）。空列表存空串，读的时候统一回空数组 */
+    private String joinImages(List<String> images) {
+        if (images == null || images.isEmpty()) {
+            return "";
+        }
+        String csv = images.stream()
+                .filter(url -> url != null && !url.isBlank())
+                .map(String::trim)
+                .collect(Collectors.joining(","));
+        // t_post.images 是 VARCHAR(1000)；超长直接拒绝，别让 MySQL 截断出一个坏 URL
+        if (csv.length() > 1000) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "配图总长度超出限制，请减少图片");
+        }
+        return csv;
+    }
+
+    /** 配图 csv → 列表。空串/脏段都跳过，不因一条旧数据让整个 Feed 报错 */
+    private List<String> splitImages(String csv) {
+        if (csv == null || csv.isBlank()) {
+            return List.of();
+        }
+        List<String> result = new ArrayList<>();
+        for (String part : csv.split(",")) {
+            if (!part.isBlank()) {
+                result.add(part.trim());
             }
         }
         return result;

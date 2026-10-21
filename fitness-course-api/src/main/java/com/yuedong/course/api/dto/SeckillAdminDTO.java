@@ -1,8 +1,10 @@
 package com.yuedong.course.api.dto;
 
 import com.fasterxml.jackson.annotation.JsonFormat;
+import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -12,6 +14,8 @@ import java.time.LocalDateTime;
  */
 @Data
 @Builder
+@NoArgsConstructor
+@AllArgsConstructor
 public class SeckillAdminDTO {
 
     private Long id;
@@ -44,4 +48,19 @@ public class SeckillAdminDTO {
 
     /** 0=待开始 1=进行中 2=已结束 */
     private Integer status;
+
+    // ===== 活动页回填 =====
+    private Boolean bannerEnabled;
+
+    private String bannerImageUrl;
+
+    private String bannerTitle;
+
+    private String bannerSubtitle;
+
+    private Integer bannerSort;
+
+    private String bannerStartTime;
+
+    private String bannerEndTime;
 }

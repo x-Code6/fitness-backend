@@ -2,8 +2,6 @@ package com.yuedong.point.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.yuedong.common.constant.RedisKeyConstants;
-import com.yuedong.common.exception.BusinessException;
-import com.yuedong.common.result.ErrorCode;
 import com.yuedong.point.api.dto.PointBriefDTO;
 import com.yuedong.point.mapper.CheckinRecordMapper;
 import com.yuedong.point.mapper.MemberPointsMapper;
@@ -17,15 +15,13 @@ import com.yuedong.point.model.vo.CheckinTodayVO;
 import com.yuedong.point.model.vo.PointsLogVO;
 import com.yuedong.point.mq.NotifyPublisher;
 import com.yuedong.point.service.CheckinService;
-import com.yuedong.point.service.PointsTxWriter;
+import com.yuedong.point.service.CheckinTxWriter;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
-import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -37,13 +33,11 @@ import java.util.List;
  * <p>★<b>写入顺序是这一版最该被讲清楚的一处</b>，一句话原则：
  * <b>不可重建的先落库，可重建的最后写缓存。</b></p>
  * <ol>
- *   <li>{@code INSERT t_checkin_record} —— 撞 {@code uk_user_date} 就是"今天已打过"。
- *       判重<b>从"GETBIT 后 SETBIT"换成唯一索引</b>：两次 Redis 命令之间有窗口，
- *       并发双击会加两次分（P1-7）；唯一索引是数据库级保证，不需要 Lua 也不需要分布式锁；</li>
- *   <li>Redis 位图 SETBIT —— 展示缓存；</li>
- *   <li>连续天数 —— 位图从今天的 offset 往低数连续 1；</li>
- *   <li>{@link PointsTxWriter} —— 余额 + 流水，一个真事务；</li>
- *   <li>事务成功后 ZINCRBY 月榜 —— 榜少一分能被归档任务按 DB 修正，钱错不得。</li>
+ *   <li>先确保 Redis 位图存在（缺了从 DB 明细重建），并<b>从昨天</b>往低数连续天数；</li>
+ *   <li>{@link CheckinTxWriter} —— 打卡明细 + 积分流水 + 余额，一个真事务。
+ *       撞 {@code uk_user_date} 就是"今天已打过"，并发双击也只有一次能成功；</li>
+ *   <li>事务提交后再写今天这一位；Redis 失败只删 key，等待下次重建；</li>
+ *   <li>事务成功后才 ZINCRBY 月榜、发通知 —— 旁路失败不能让用户重试一次成功的打卡。</li>
  * </ol>
  *
  * <p>★旧实现第 1 步就是 Redis，DB 里<b>根本没有打卡明细</b>：Redis 一清空，
@@ -79,7 +73,13 @@ public class CheckinServiceImpl implements CheckinService {
     private final MemberPointsMapper memberPointsMapper;
     private final PointsLogMapper pointsLogMapper;
     private final CheckinRecordMapper checkinRecordMapper;
-    private final PointsTxWriter pointsTxWriter;
+    /**
+     * 打卡的事务段：打卡明细 + 积分流水/余额。
+     * <p>★为什么单独一个 Bean：Spring 事务靠代理生效，同类里 {@code this.} 调用不走代理，
+     * 注解等于白写。这里把事务边界显式放到另一个 Bean 上，读代码的人一眼能看到
+     * "哪几步是一起成败的"。</p>
+     */
+    private final CheckinTxWriter checkinTxWriter;
     private final NotifyPublisher notifyPublisher;
 
     @Override
@@ -102,45 +102,56 @@ public class CheckinServiceImpl implements CheckinService {
     @Override
     public CheckinResultVO doCheckin(Long userId) {
         LocalDate today = LocalDate.now();
+        String bitmapKey = RedisKeyConstants.pointCheck(userId);
+        long todayOffset = offsetOf(today);
 
-        // ===== 第 1 步：先落库判重（★这一步才是"打过没"的真判据）=====
-        CheckinRecord record = new CheckinRecord();
-        record.setUserId(userId);
-        record.setCheckDate(today);
-        record.setCreatedAt(LocalDateTime.now());
+        // ===== 第 1 步：位图是展示缓存，缺了先用 DB 明细补 =====
+        // 这一步只补历史，不写"今天"：今天的打卡还没落库，先写位图会制造一条
+        // 数据库里不存在的记录，事务失败时也分不清"到底打没打"。
+        ensureBitmap(userId, bitmapKey);
+
+        // ===== 第 2 步：从"昨天"开始数连续天数，再 +1 =====
+        // 今天能不能打成功要等事务提交，所以不能把今天先算进去。
+        int continuousDays = countContinuousBefore(bitmapKey, todayOffset) + 1;
+
+        // ===== 第 3 步：打卡明细 + 积分流水 + 余额，同一个事务 =====
+        // ★以前是"先 insert 打卡记录（自动提交）→ 再调积分事务"：
+        //   中间任何一步失败都会留下"有打卡记录、没有积分"的脏数据；
+        //   用户重试又会被 uk_user_date 判成"今天已打卡"，这 10 分永远补不回来。
+        boolean granted = checkinTxWriter.checkinAndGrant(userId, today, continuousDays, CHECKIN_POINTS);
+
+        // ===== 第 4 步：事务提交后才写位图 =====
+        // 位图是可重建的缓存，写失败只删 key，下一次 ensureBitmap 会从 DB 重建。
+        // 绝不能因为 Redis 抖动，把一次已经成功的打卡回报成失败。
         try {
-            checkinRecordMapper.insert(record);
-        } catch (DuplicateKeyException e) {
-            throw new BusinessException(ErrorCode.CHECKIN_DUPLICATE);
+            redis.opsForValue().setBit(bitmapKey, todayOffset, true);
+        } catch (Exception e) {
+            redis.delete(bitmapKey);
+            log.error("打卡成功但位图写入失败，已删除位图等待下次重建: userId={}", userId, e);
         }
 
-        // ===== 第 2 步：位图补一天（缓存，可重建）=====
-        String bitmapKey = RedisKeyConstants.pointCheck(userId);
-        ensureBitmap(userId, bitmapKey);
-        long offset = offsetOf(today);
-        redis.opsForValue().setBit(bitmapKey, offset, true);
-
-        // ===== 第 3 步：连续天数（从今天的位往低数连续 1）=====
-        int continuousDays = countContinuous(bitmapKey, offset);
-
-        // ===== 第 4 步：积分入账（流水 + 余额，同一个事务）=====
-        // ★biz_id 用日期串：uk_biz(CHECKIN, 2026-10-14) 让"同一天记两条流水"在库里也不可能，
-        //   这是第 1 步之外的第二道防重（第一道挡用户双击，这一道挡重试与脚本重放）
-        boolean granted = pointsTxWriter.grant(userId, CHECKIN_POINTS, continuousDays,
-                "CHECKIN", today.format(DAY_FMT), "每日打卡");
-
-        // ===== 第 5 步：事务成功后才动榜 =====
-        // ★榜加分放在 DB 之后：Redis 加了分但 DB 失败 → 榜上有分、账户没钱，用户投诉时查无实据；
-        //   DB 成功但榜少一分 → 归档任务按 DB 重算就能修正。<b>故障后果的可修复性决定写入顺序</b>
+        // ===== 第 5 步：事务成功后才动榜和发通知 =====
+        // 榜和通知都是旁路：失败不能让用户看到"打卡失败"，否则他重试只会得到
+        // "今天已打卡"这个更差的结果。数据库已经成功，日志留给对账。
         if (granted) {
-            redis.opsForZSet().incrementScore(
-                    RedisKeyConstants.rankMonth(today.format(MONTH_FMT)), String.valueOf(userId), CHECKIN_POINTS);
+            try {
+                redis.opsForZSet().incrementScore(
+                        RedisKeyConstants.rankMonth(today.format(MONTH_FMT)),
+                        String.valueOf(userId), CHECKIN_POINTS);
+            } catch (Exception e) {
+                log.error("打卡成功但月榜加分失败，等待后续对账: userId={}", userId, e);
+            }
             notifyPublisher.publishPointNotify(userId, "打卡成功",
                     "今日打卡 +" + CHECKIN_POINTS + " 积分，已连续打卡 " + continuousDays + " 天。");
+        } else {
+            // 正常第二次打卡会在事务里的 uk_user_date 直接报"今天已打卡"。
+            // 走到这里说明是历史数据里的边缘情况：积分流水已经存在、打卡明细缺失；
+            // 现在明细补上了，但今天不再重复加分。
+            log.warn("打卡明细已写入，但今天的积分流水已存在，本次不重复加分: userId={}", userId);
         }
 
         MemberPoints latest = memberPointsMapper.selectById(userId);
-        return new CheckinResultVO(CHECKIN_POINTS, continuousDays,
+        return new CheckinResultVO(granted ? CHECKIN_POINTS : 0, continuousDays,
                 latest == null ? 0 : latest.getBalance());
     }
 
@@ -246,20 +257,25 @@ public class CheckinServiceImpl implements CheckinService {
     }
 
     /**
-     * 从今天的位往低数连续 1 的个数。
+     * 从<b>昨天</b>的位往低数连续 1 的个数。
+     *
+     * <p>★为什么从昨天开始：今天要等事务提交才算打卡成功，先把今天算进去会让
+     * "事务失败但连续天数已经 +1"。调用方最后会再 +1，得到包含今天的连续天数。</p>
      *
      * <p>★为什么用逐位 GETBIT 而不是一条 BITFIELD：位图跨度按"距基准日天数"算，
      * 想一次取 64 位就得处理 offset 不对齐的问题（跨两个 64 位块要拼两次），
      * 而正常情况下连续天数只会数几十位就断。这个函数在"读到 0"就停，
      * 最坏情况由 {@code MAX_CONTINUOUS_SCAN} 兜住。</p>
      */
-    private int countContinuous(String bitmapKey, long todayOffset) {
+    private int countContinuousBefore(String bitmapKey, long todayOffset) {
         int continuous = 0;
-        while (continuous < MAX_CONTINUOUS_SCAN && todayOffset - continuous >= 0) {
-            if (!Boolean.TRUE.equals(redis.opsForValue().getBit(bitmapKey, todayOffset - continuous))) {
+        long offset = todayOffset - 1;
+        while (continuous < MAX_CONTINUOUS_SCAN && offset >= 0) {
+            if (!Boolean.TRUE.equals(redis.opsForValue().getBit(bitmapKey, offset))) {
                 break;
             }
             continuous++;
+            offset--;
         }
         return continuous;
     }

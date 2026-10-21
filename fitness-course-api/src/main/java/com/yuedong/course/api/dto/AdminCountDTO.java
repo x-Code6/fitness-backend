@@ -1,7 +1,9 @@
 package com.yuedong.course.api.dto;
 
+import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 /**
  * 管理端看板的<b>课程侧</b>计数（看板其余数字来自 order / user）。
@@ -13,6 +15,8 @@ import lombok.Data;
  */
 @Data
 @Builder
+@NoArgsConstructor
+@AllArgsConstructor
 public class AdminCountDTO {
 
     /** 在售课程数（status=1） */

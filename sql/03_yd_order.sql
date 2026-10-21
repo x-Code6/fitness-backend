@@ -42,8 +42,9 @@ CREATE TABLE IF NOT EXISTS t_booking (
     coupon_title    VARCHAR(50)   NULL COMMENT '券名快照，订单详情要显示"已用新人无门槛券 -¥10"',
     status          VARCHAR(10)   NOT NULL DEFAULT 'UNPAID' COMMENT '★订单轴：UNPAID 待支付 / PAID 已支付 / CANCELED 已取消 / REFUNDED 已退款。字符串枚举名而非数字：状态多且日志要肉眼可读',
     cancel_reason   VARCHAR(50)   NULL COMMENT '取消原因，如"超时未支付""用户主动取消"',
-    refunded        TINYINT       NOT NULL DEFAULT 0 COMMENT '1 已发生退款。★支付与退款都是写死的模拟：不调任何支付网关，只置状态 + 前端显示"已退款"',
-    refund_at       DATETIME      NULL COMMENT '退款时间',
+    refunded        TINYINT       NOT NULL DEFAULT 0 COMMENT '1 已发生退款（可能是部分退款）。★支付与退款都是写死的模拟：不调任何支付网关',
+    refund_amount   DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT '累计已退款金额。★达到 pay_amount 时订单才置 REFUNDED；小于时订单仍是 PAID（部分退款）',
+    refund_at       DATETIME      NULL COMMENT '最近一次退款时间',
     created_at      DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '下单时间',
     pay_time        DATETIME      NULL COMMENT '支付时间',
     canceled_at     DATETIME      NULL COMMENT '取消时间',
@@ -72,6 +73,11 @@ CREATE TABLE IF NOT EXISTS t_entitlement (
     sale_type    VARCHAR(10)  NOT NULL DEFAULT 'TIMES' COMMENT '快照：TIMES/UNLIMITED。管理员改了课程售卖形态不能追溯改变已售凭证',
     total_times  INT          NULL COMMENT '★TIMES = 该单给的次数；UNLIMITED = NULL（不限次）。所有次数校验必须写成 (total_times IS NULL OR used_times < total_times)，漏了前半句会把不限次课当 0 次卡',
     used_times   INT          NOT NULL DEFAULT 0 COMMENT '已消费次数。扣次时机=到点未取消（定时任务），取消预约不扣',
+    -- ★按张退款的三列：退款金额必须以"这张凭证成交时实际付了多少"为准。
+    --   不能用原价退（用户用了券会赚），也不能用整单实付现除（订单改价后就错）。
+    paid_amount  DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT '出票时按份数分摊到的实付金额。例：买 2 份实付 150 → 每张 75；除不尽余数给最后一张',
+    refund_amount DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT '已退款金额。一张凭证最多退一次，refunded_at 非空即已退',
+    refunded_at  DATETIME     NULL COMMENT '退款时间；NULL = 未退款。★退款不新增 status，用这一列区分“过期且已退”和“过期未退”',
     valid_until  DATETIME     NULL COMMENT '使用截止；★NULL = 永不过期。过期定时任务必须写 valid_until IS NOT NULL，否则常年课会被集体误判过期退款',
     status       VARCHAR(10)  NOT NULL DEFAULT 'ACTIVE' COMMENT '★凭证轴：ACTIVE 可用 / USED_UP 次数用完 / EXPIRED 已过期',
     created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -111,9 +117,19 @@ CREATE TABLE IF NOT EXISTS t_reservation (
     finished_at     DATETIME     NULL COMMENT '到点置 FINISHED 的时刻 = 消费时刻',
     created_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    -- ★派生的"待上课占用"标记：BOOKED 时为 1，其它状态为 NULL。
+    --   为什么要这么绕：MySQL 没有部分唯一索引（"只约束 status='BOOKED' 的行"），
+    --   但唯一索引允许多个 NULL。于是"这一张凭证最多只能有一行 BOOKED"这件事
+    --   就变成一条数据库级约束——不靠代码自觉，也不怕两个请求同时读到"还没有预约"。
+    --   不叫 pending_times 之类的计数字段：计数要和取消/结账/退款处处同步，
+    --   漏一处就永久错下去；状态本来就在 status 里，能算出来的不要存。
+    pending_flag    TINYINT GENERATED ALWAYS AS (CASE WHEN status = 'BOOKED' THEN 1 ELSE NULL END) STORED
+                    COMMENT '派生列：1=这节课还没上（占着凭证的一次额度），NULL=已取消/已上完',
     PRIMARY KEY (id),
     UNIQUE KEY uk_reservation_no (reservation_no),
     UNIQUE KEY uk_verify_code (verify_code),
+    -- ★一张凭证同时只能挂一节待上的课（不限次课也一样，否则一个人能把教练档期包圆）
+    UNIQUE KEY uk_pending_entitlement (entitlement_id, pending_flag),
     -- "我的预约"列表 / 即将上课
     KEY idx_user_status (user_id, status, start_time),
     -- ★到点扣次定时任务专用：WHERE status='BOOKED' AND start_time<=NOW()。
@@ -143,6 +159,9 @@ CREATE TABLE IF NOT EXISTS t_coach_busy (
     -- 两人抢同一格时后插入的人必然撞这个唯一键，事务自动回滚，不需要任何锁或 Lua。
     -- 这也是"取消教练排班 + 课程时长不可拆分"两个决定换来的红利。
     UNIQUE KEY uk_coach_start (coach_id, start_time),
+    -- ★同一个人同一小时只能有一节课：业务代码里的"先查我有没有课"挡不住并发，
+    --   两个不同教练的格子不冲突，只有这条 (user_id, start_time) 唯一键能兜住。
+    UNIQUE KEY uk_user_start (user_id, start_time),
     -- 取消预约时按预约单号一次删掉它占的所有格子
     KEY idx_reservation (reservation_id),
     -- "某教练某天被占了哪些格"（查空闲时的主查询）
@@ -232,12 +251,13 @@ INSERT INTO t_booking (id, order_no, user_id, course_id, course_kind, store_id, 
 (3, 'B20261012100003', 10002, 9,  'SALE', 3, NULL, '私教·增肌入门 2 小时', '悦动·高新店',   2, 'TIMES',     2, 1, 298.00, 50.00, 248.00, 'PAID', NOW() - INTERVAL 1 DAY, NOW() - INTERVAL 1 DAY);
 
 INSERT INTO t_entitlement (id, user_id, order_no, course_id, store_id, course_name, store_name,
-                           lesson_hours, sale_type, total_times, used_times, valid_until, status) VALUES
-(1, 10001, 'B20261010100001', 1, 1, '燃脂跳操·Zumba 热舞',  '悦动·大学城店', 1, 'TIMES',     1,    1, NOW() + INTERVAL 27 DAY, 'USED_UP'),
-(2, 10001, 'B20261010100001', 1, 1, '燃脂跳操·Zumba 热舞',  '悦动·大学城店', 1, 'TIMES',     1,    0, NOW() + INTERVAL 27 DAY, 'ACTIVE'),
+                           lesson_hours, sale_type, total_times, used_times, paid_amount,
+                           valid_until, status) VALUES
+(1, 10001, 'B20261010100001', 1, 1, '燃脂跳操·Zumba 热舞',  '悦动·大学城店', 1, 'TIMES',     1,    1, 68.00, NOW() + INTERVAL 27 DAY, 'USED_UP'),
+(2, 10001, 'B20261010100001', 1, 1, '燃脂跳操·Zumba 热舞',  '悦动·大学城店', 1, 'TIMES',     1,    0, 68.00, NOW() + INTERVAL 27 DAY, 'ACTIVE'),
 -- ★valid_until = NULL 的长期凭证（FOREVER 形态），过期任务必须跳过它
-(3, 10001, 'B20261011100002', 4, 3, '动感单车·极速卡路里',  '悦动·高新店',   1, 'UNLIMITED', NULL, 2, NULL,                  'ACTIVE'),
-(4, 10002, 'B20261012100003', 9, 3, '私教·增肌入门 2 小时', '悦动·高新店',   2, 'TIMES',     2,    0, NOW() + INTERVAL 59 DAY, 'ACTIVE');
+(3, 10001, 'B20261011100002', 4, 3, '动感单车·极速卡路里',  '悦动·高新店',   1, 'UNLIMITED', NULL, 2, 19.90, NULL,                  'ACTIVE'),
+(4, 10002, 'B20261012100003', 9, 3, '私教·增肌入门 2 小时', '悦动·高新店',   2, 'TIMES',     2,    0, 248.00, NOW() + INTERVAL 59 DAY, 'ACTIVE');
 
 -- 已完成的两节 + 一张待上课的预约（含占用格子）
 INSERT INTO t_reservation (id, reservation_no, user_id, entitlement_id, order_no, course_id, store_id, coach_id,

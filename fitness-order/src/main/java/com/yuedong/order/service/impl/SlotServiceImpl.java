@@ -20,6 +20,7 @@ import com.yuedong.order.model.vo.slot.SlotCoachVO;
 import com.yuedong.order.model.vo.slot.SlotItemVO;
 import com.yuedong.order.model.vo.slot.SlotMyVO;
 import com.yuedong.order.model.vo.slot.SlotPageVO;
+import com.yuedong.order.rule.BookingTimeRule;
 import com.yuedong.order.service.SlotService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -58,6 +59,8 @@ public class SlotServiceImpl implements SlotService {
     private final CourseClient courseClient;
     private final CoachClient coachClient;
     private final StoreClient storeClient;
+    /** 取"已约未上"的占用数用（判"这张凭证现在还能不能约"必须算上它） */
+    private final com.yuedong.order.service.EntitlementService entitlementService;
 
     @Override
     public SlotPageVO slots(Long userId, Long courseId, Long storeId, String date) {
@@ -81,7 +84,8 @@ public class SlotServiceImpl implements SlotService {
         // ===== 第 3 步：门店（营业时间）。店被删时 detail 返回 null，整页无法渲染 =====
         // 这里宁可报错也不要画一张"营业时间未知"的页面：用户点了也约不上，白跑一趟
         StoreDTO store = storeClient.detail(storeId).getData();
-        if (store == null) {
+        // 门店不存在或被停用（status=0）都不给排时段：用户约了也上不了课
+        if (store == null || !Integer.valueOf(1).equals(store.getStatus())) {
             throw new BusinessException(ErrorCode.STORE_NOT_FOUND);
         }
 
@@ -103,12 +107,15 @@ public class SlotServiceImpl implements SlotService {
                 .eq(Entitlement::getStoreId, storeId)
                 .orderByAsc(Entitlement::getId));
         SlotMyVO my = buildMy(mine);
+        // 时段页和建单共用同一个有效期口径：整节课的结束时刻必须在 validUntil 之前。
+        // 否则用户会看到 23:00 的格子可点，提交时却被"凭证在下课时已失效"拒绝。
+        LocalDateTime myValidUntil = selectedValidUntil(mine, my);
 
         // ===== 第 7 步：逐个教练在内存里生成格子表 =====
         List<SlotCoachVO> coachVOs = new ArrayList<>(coaches.size());
         for (CoachDTO coach : coaches) {
             coachVOs.add(buildCoach(coach, store, day, lessonHours,
-                    Boolean.TRUE.equals(my.getCanBook()), userId,
+                    Boolean.TRUE.equals(my.getCanBook()), myValidUntil, userId,
                     busyIndex.getOrDefault(coach.getCoachId(), new HashMap<>())));
         }
 
@@ -168,15 +175,35 @@ public class SlotServiceImpl implements SlotService {
     // =====================================================================
 
     /**
+     * 从"我的凭证"里找出被选中的那张，返回它的有效期。
+     * <p>buildMy 已经挑好了最早过期的那张；这里只是把同一个决定带到格子生成里，
+     * 保证"凭证选择"和"有效期限制"用的是同一张凭证。</p>
+     */
+    private LocalDateTime selectedValidUntil(List<Entitlement> mine, SlotMyVO my) {
+        if (my.getEntitlementId() == null) {
+            return null;
+        }
+        for (Entitlement entitlement : mine) {
+            if (entitlement.getId().equals(my.getEntitlementId())) {
+                return entitlement.getValidUntil();
+            }
+        }
+        return null;
+    }
+
+    /**
      * 组装"我的凭证"条。
      * <p>★多张同名凭证时挑<b>最早过期</b>的那张先消耗（null 视为最晚）：
      * 反正都要过期，先用快过期的，长期有效的那张留着，这是对用户最有利的顺序。</p>
      */
     private SlotMyVO buildMy(List<Entitlement> mine) {
         LocalDateTime now = LocalDateTime.now();
+        // ★占用数一次批量拿完（这个方法在时段页每次切换日期都会被走到，循环查库就是 N+1）
+        Map<Long, Integer> pendingMap = entitlementService.pendingCounts(
+                mine.stream().map(Entitlement::getId).toList());
         List<Entitlement> usable = new ArrayList<>();
         for (Entitlement entitlement : mine) {
-            if (entitlement.usableAt(now)) {
+            if (entitlement.bookableAt(now, pendingMap.getOrDefault(entitlement.getId(), 0))) {
                 usable.add(entitlement);
             }
         }
@@ -201,13 +228,15 @@ public class SlotServiceImpl implements SlotService {
         }
         boolean unlimited = pick.getTotalTimes() == null;
         int used = pick.getUsedTimes() == null ? 0 : pick.getUsedTimes();
+        // 已约未上的也要占用次数，否则页面会显示"剩 2 次"、实际只能再约 1 次
+        int pending = pendingMap.getOrDefault(pick.getId(), 0);
 
         return SlotMyVO.builder()
                 .bought(true)
                 .entitlementId(pick.getId())
                 .totalTimes(pick.getTotalTimes())
                 .usedTimes(used)
-                .remainTimes(unlimited ? null : Math.max(pick.getTotalTimes() - used, 0))
+                .remainTimes(unlimited ? null : Math.max(pick.getTotalTimes() - used - pending, 0))
                 .unlimited(unlimited)
                 .validUntilText(pick.getValidUntil() == null
                         ? "长期有效" : pick.getValidUntil().format(DAY_FMT) + " 前可用")
@@ -227,11 +256,12 @@ public class SlotServiceImpl implements SlotService {
      * （人总要下班），下界取 0。交集为空就是零格子，页面显示"当天无可约时段"。</p>
      */
     private SlotCoachVO buildCoach(CoachDTO coach, StoreDTO store, LocalDate day, int lessonHours,
-                                   boolean canBook, Long userId, Map<LocalDateTime, Long> busyCells) {
-        boolean worksToday = worksOn(coach.getWorkDays(), day);
-        int openStart = is24h(store) ? 0 : Math.max(nz(store.getOpenStartHour(), 0), nz(coach.getWorkStartHour(), 0));
-        int openEnd = is24h(store) ? nz(coach.getWorkEndHour(), 0)
-                : Math.min(nz(store.getOpenEndHour(), 0), nz(coach.getWorkEndHour(), 0));
+                                   boolean canBook, LocalDateTime validUntil, Long userId,
+                                   Map<LocalDateTime, Long> busyCells) {
+        boolean worksToday = BookingTimeRule.worksOn(coach.getWorkDays(), day);
+        // ★和 ReservationServiceImpl 共用同一个规则类，杜绝“页面显示不可约、建单却放行”
+        int openStart = BookingTimeRule.openStart(store, coach);
+        int openEnd = BookingTimeRule.openEnd(store, coach);
 
         boolean isToday = day.equals(LocalDate.now());
         int nowHour = LocalDateTime.now().getHour();
@@ -267,6 +297,14 @@ public class SlotServiceImpl implements SlotService {
                 if (idx >= cells.size() || cells.get(idx).reason != null) {
                     groupBookable = false;
                     break;
+                }
+            }
+            // 整组的下课时刻超过凭证有效期 → 这一组也不可约。
+            // validUntil 为 null 表示长期有效，不限制。
+            if (groupBookable && validUntil != null) {
+                LocalDateTime groupEnd = cells.get(g * lessonHours).start.plusHours(lessonHours);
+                if (!validUntil.isAfter(groupEnd)) {
+                    groupBookable = false;
                 }
             }
             for (int i = 0; i < lessonHours && g * lessonHours + i < cells.size(); i++) {
@@ -374,24 +412,6 @@ public class SlotServiceImpl implements SlotService {
         return day;
     }
 
-    /** work_days 形如 "1,2,3,4,5,6,7"（1=周一）。★Java 的 DayOfWeek 本来就是 1=周一，无需换算 */
-    private boolean worksOn(String workDays, LocalDate day) {
-        if (workDays == null || workDays.isBlank()) {
-            return false;
-        }
-        String dow = String.valueOf(day.getDayOfWeek().getValue());
-        for (String part : workDays.split(",")) {
-            if (part.trim().equals(dow)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private boolean is24h(StoreDTO store) {
-        return store.getIs24h() != null && store.getIs24h() == 1;
-    }
-
     private int nz(Integer value, int fallback) {
         return value == null ? fallback : value;
     }
@@ -405,7 +425,7 @@ public class SlotServiceImpl implements SlotService {
     }
 
     private String storeOpenText(StoreDTO store) {
-        if (is24h(store)) {
+        if (BookingTimeRule.is24h(store)) {
             return "00:00 - 24:00";
         }
         if (store.getOpenHoursText() != null && !store.getOpenHoursText().isBlank()) {
