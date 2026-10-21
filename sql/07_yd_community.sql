@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS t_post (
     collect_count INT          NOT NULL DEFAULT 0 COMMENT '收藏数。★和点赞分列：两者语义不同（收藏=我要留着），且参与热度加权更高',
     comment_count INT          NOT NULL DEFAULT 0 COMMENT '评论数（含二级回复）',
     view_count    INT          NOT NULL DEFAULT 0 COMMENT '浏览量<b>账本</b>。★真实时累加在 Redis Hash（post:view:delta），由定时任务原子取出后 view_count = view_count + delta 刷进来；这里永远是真相，Redis 只是缓冲',
-    status        TINYINT      NOT NULL DEFAULT 1 COMMENT '1 正常 / 0 已删除（作者删除走软删，收件箱里的 id 回表时按此过滤）',
+    status        TINYINT      NOT NULL DEFAULT 1 COMMENT '1 正常 / 0 作者删除 / 2 管理员隐藏（用户端查询只放行 1，2 可在后台恢复）',
     created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '发布时间。★同时是时间线游标与热度公式的时间因子',
     updated_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (id),

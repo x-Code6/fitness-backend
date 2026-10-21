@@ -26,7 +26,7 @@
     <packaging>pom</packaging>
     <name>fitness-backend</name>
 
-    <!-- 子模块：4 个 api 模块放各自业务服务前面，保证构建顺序正确 -->
+    <!-- 子模块：api 模块放各自业务服务前面，保证构建顺序正确 -->
     <modules>
         <module>fitness-common</module>
         <!-- 文件服务：图片上传落盘 + 静态读取，管理端与用户端共用一套落盘规则 -->
@@ -35,6 +35,7 @@
         <module>fitness-course-api</module>
         <module>fitness-order-api</module>
         <module>fitness-point-api</module>
+        <module>fitness-community-api</module>
         <module>fitness-gateway</module>
         <module>fitness-user</module>
         <module>fitness-course</module>

@@ -1,10 +1,13 @@
 package com.yuedong.community.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.yuedong.common.constant.RedisKeyConstants;
 import com.yuedong.common.exception.BusinessException;
+import com.yuedong.common.model.PageDTO;
 import com.yuedong.common.result.ErrorCode;
 import com.yuedong.common.result.Result;
+import com.yuedong.community.api.dto.CommunityAdminDTO;
 import com.yuedong.community.mapper.CommentMapper;
 import com.yuedong.community.mapper.PostCollectMapper;
 import com.yuedong.community.mapper.PostLikeMapper;
@@ -85,6 +88,12 @@ public class CommunityServiceImpl implements CommunityService {
     private static final String VIS_PUBLIC = "PUBLIC";
     private static final String VIS_FRIEND = "FRIEND";
     private static final String VIS_PRIVATE = "PRIVATE";
+
+    // ===== 动态状态：0 作者删除 / 1 正常 / 2 管理员隐藏 =====
+    // ★用户端所有查询只放行 1；2 是给审核用的“可恢复下架”，和作者删除分开
+    private static final int POST_STATUS_DELETED = 0;
+    private static final int POST_STATUS_NORMAL = 1;
+    private static final int POST_STATUS_HIDDEN = 2;
 
     // ===== Feed tab =====
     private static final String TAB_RECOMMEND = "recommend";
@@ -623,6 +632,99 @@ public class CommunityServiceImpl implements CommunityService {
     }
 
     // =====================================================================
+    // 管理端审核
+    // =====================================================================
+    @Override
+    public PageDTO<CommunityAdminDTO> adminPage(String keyword, Integer status, Integer page, Integer size) {
+        int pageNo = page == null || page < 1 ? 1 : page;
+        int pageSize = size == null || size < 1 ? 10 : Math.min(size, 50);
+        String kw = keyword == null || keyword.isBlank() ? null : keyword.trim();
+
+        Page<Post> result = postMapper.selectPage(new Page<>(pageNo, pageSize),
+                new LambdaQueryWrapper<Post>()
+                        // 关键词只搜内容/昵称/话题：审核最常用的三个入口
+                        .and(kw != null, w -> w.like(Post::getContent, kw)
+                                .or().like(Post::getUserName, kw)
+                                .or().like(Post::getTopic, kw))
+                        .eq(status != null, Post::getStatus, status)
+                        .orderByDesc(Post::getId));
+
+        List<CommunityAdminDTO> rows = new ArrayList<>(result.getRecords().size());
+        for (Post post : result.getRecords()) {
+            rows.add(toAdminDTO(post));
+        }
+        return PageDTO.of(rows, result.getTotal());
+    }
+
+    @Override
+    public void adminSetStatus(Long postId, Integer status) {
+        if (!Integer.valueOf(POST_STATUS_NORMAL).equals(status)
+                && !Integer.valueOf(POST_STATUS_HIDDEN).equals(status)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "审核状态只能是 1（恢复）或 2（隐藏）");
+        }
+        Post post = postMapper.selectById(postId);
+        if (post == null) {
+            throw new BusinessException(ErrorCode.POST_NOT_FOUND);
+        }
+        // ★作者已经删掉的动态不能被审核“恢复”：那会绕过作者的删除意愿
+        if (Integer.valueOf(POST_STATUS_DELETED).equals(post.getStatus())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "作者已删除的动态不能恢复");
+        }
+        Post patch = new Post();
+        patch.setId(postId);
+        patch.setStatus(status);
+        postMapper.updateById(patch);
+        log.info("管理端修改动态状态: postId={}, status={}", postId, status);
+    }
+
+    @Override
+    public void adminDelete(Long postId) {
+        Post post = postMapper.selectById(postId);
+        if (post == null) {
+            throw new BusinessException(ErrorCode.POST_NOT_FOUND);
+        }
+        if (Integer.valueOf(POST_STATUS_DELETED).equals(post.getStatus())) {
+            return;
+        }
+        Post patch = new Post();
+        patch.setId(postId);
+        patch.setStatus(POST_STATUS_DELETED);
+        postMapper.updateById(patch);
+        log.info("管理端删除动态: postId={}", postId);
+    }
+
+    private CommunityAdminDTO toAdminDTO(Post post) {
+        return CommunityAdminDTO.builder()
+                .id(post.getId())
+                .userId(post.getUserId())
+                .userName(post.getUserName())
+                .avatarIdx(parseAvatar(post.getAvatarColor()))
+                .content(post.getContent())
+                .images(splitImages(post.getImages()))
+                .topic(post.getTopic())
+                .visibility(post.getVisibility())
+                .visibilityText(visibilityText(post.getVisibility()))
+                .likeCount(post.getLikeCount())
+                .collectCount(post.getCollectCount())
+                .commentCount(post.getCommentCount())
+                .viewCount(post.getViewCount())
+                .status(post.getStatus())
+                .statusText(postStatusText(post.getStatus()))
+                .createdAt(post.getCreatedAt())
+                .build();
+    }
+
+    private String postStatusText(Integer status) {
+        if (Integer.valueOf(POST_STATUS_HIDDEN).equals(status)) {
+            return "审核隐藏";
+        }
+        if (Integer.valueOf(POST_STATUS_DELETED).equals(status)) {
+            return "已删除";
+        }
+        return "正常";
+    }
+
+    // =====================================================================
     // 私有工具
     // =====================================================================
 
@@ -818,9 +920,38 @@ public class CommunityServiceImpl implements CommunityService {
         Set<Long> likedIds = likedPostIds(userId, ids);
         Set<Long> collectedIds = collectedPostIds(userId, ids);
         Map<Long, Integer> deltas = postViewService.currentDeltas(ids);
+        // 作者头像：一页动态只发一次批量 Feign，不在循环里逐条查用户
+        Map<Long, String> avatarImages = loadAvatarImages(posts);
         return posts.stream()
-                .map(p -> toVO(p, userId, likedIds, collectedIds, deltas.getOrDefault(p.getId(), 0)))
+                .map(p -> toVO(p, userId, likedIds, collectedIds,
+                        deltas.getOrDefault(p.getId(), 0), avatarImages.get(p.getUserId())))
                 .toList();
+    }
+
+    /**
+     * 批量取作者头像路径。
+     *
+     * <p>昵称/头像色是发布时的快照，但头像图片允许用户随时更换，
+     * 所以读 Feed 时补一次当前头像。失败只降级成渐变色，不影响社区可用。</p>
+     */
+    private Map<Long, String> loadAvatarImages(List<Post> posts) {
+        List<Long> userIds = posts.stream().map(Post::getUserId).distinct().toList();
+        if (userIds.isEmpty()) {
+            return Map.of();
+        }
+        try {
+            Result<List<UserBriefDTO>> result = userClient.batch(new BatchUserQueryDTO(userIds));
+            if (result.getCode() != 0 || result.getData() == null) {
+                return Map.of();
+            }
+            return result.getData().stream()
+                    .filter(u -> u.getAvatarImage() != null && !u.getAvatarImage().isBlank())
+                    .collect(Collectors.toMap(UserBriefDTO::getId, UserBriefDTO::getAvatarImage,
+                            (first, second) -> first));
+        } catch (Exception e) {
+            log.warn("批量获取作者头像失败，回退渐变色: {}", e.getMessage());
+            return Map.of();
+        }
     }
 
     /** 当前用户对这批动态的点赞 id 集合（一次查出，内存标记，★不在循环里逐条 EXISTS） */
@@ -883,12 +1014,14 @@ public class CommunityServiceImpl implements CommunityService {
         return fallback;
     }
 
-    private PostVO toVO(Post p, Long userId, Set<Long> likedIds, Set<Long> collectedIds, int viewDelta) {
+    private PostVO toVO(Post p, Long userId, Set<Long> likedIds, Set<Long> collectedIds,
+                        int viewDelta, String avatarImage) {
         return PostVO.builder()
                 .id(p.getId())
                 .userId(p.getUserId())
                 .nickname(p.getUserName())
                 .avatarIdx(parseAvatar(p.getAvatarColor()))
+                .avatarImage(avatarImage)
                 .content(p.getContent())
                 .images(splitImages(p.getImages()))
                 .likes(p.getLikeCount())

@@ -50,9 +50,9 @@ public class AuthAdminController {
      */
     private static final Map<String, List<String>> ROLE_MENUS = Map.of(
             "SUPER", List.of("dashboard", "courses", "coaches", "stores", "seckill",
-                    "banners", "coupons", "orders", "reservations", "members", "gifts", "logs"),
+                    "banners", "coupons", "orders", "reservations", "members", "community", "gifts", "logs"),
             "OPERATOR", List.of("dashboard", "courses", "coaches", "seckill",
-                    "banners", "coupons", "orders", "reservations", "gifts"));
+                    "banners", "coupons", "orders", "reservations", "community", "gifts"));
 
     private final AdminMapper adminMapper;
     private final PasswordEncoder passwordEncoder;
