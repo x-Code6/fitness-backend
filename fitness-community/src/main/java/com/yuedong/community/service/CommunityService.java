@@ -1,5 +1,7 @@
 package com.yuedong.community.service;
 
+import com.yuedong.common.model.PageDTO;
+import com.yuedong.community.api.dto.CommunityAdminDTO;
 import com.yuedong.community.model.dto.CommentDTO;
 import com.yuedong.community.model.dto.PublishDTO;
 import com.yuedong.community.model.vo.CollectResultVO;
@@ -66,4 +68,21 @@ public interface CommunityService {
 
     /** 删除自己发的评论（软删，保留占位不让整串回复失去父节点） */
     void deleteComment(Long userId, Long commentId);
+
+    // =====================================================================
+    // 管理端审核（由 fitness-admin-server 的 /admin/community/** 通过 Feign 调用）
+    // =====================================================================
+    /**
+     * 管理端动态分页。
+     *
+     * @param keyword 内容/昵称/话题模糊搜索，空表示不筛
+     * @param status  0 作者删除 / 1 正常 / 2 审核隐藏；null 表示全部
+     */
+    PageDTO<CommunityAdminDTO> adminPage(String keyword, Integer status, Integer page, Integer size);
+
+    /** 审核上下架：1 恢复为正常，2 隐藏。作者已删除（0）的记录不允许被恢复成正常 */
+    void adminSetStatus(Long postId, Integer status);
+
+    /** 管理端删除：软删为 status=0，用户端立即不可见 */
+    void adminDelete(Long postId);
 }

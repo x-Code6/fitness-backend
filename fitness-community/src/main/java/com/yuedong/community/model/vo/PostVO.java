@@ -23,8 +23,11 @@ public class PostVO {
     /** 作者昵称（发布时快照，改昵称不影响历史动态） */
     private String nickname;
 
-    /** 头像渐变下标 */
+    /** 头像渐变下标（没上传头像时用它兜底） */
     private Integer avatarIdx;
+
+    /** 作者头像访问路径；用户服务暂时不可用时为 null，前端回退渐变色 */
+    private String avatarImage;
 
     private String content;
 

@@ -68,6 +68,12 @@
             <artifactId>fitness-user-api</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <!-- 管理端审核契约：本服务既提供实现，也复用它里面的 DTO -->
+        <dependency>
+            <groupId>com.yuedong</groupId>
+            <artifactId>fitness-community-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
     </dependencies>
 
     <build>

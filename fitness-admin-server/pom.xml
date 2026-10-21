@@ -83,6 +83,11 @@
             <artifactId>fitness-point-api</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <dependency>
+            <groupId>com.yuedong</groupId>
+            <artifactId>fitness-community-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
     </dependencies>
 
     <build>
