@@ -204,6 +204,8 @@ CREATE TABLE IF NOT EXISTS t_video_progress (
     progress        INT      NOT NULL DEFAULT 0 COMMENT '★最大进度 0~100，语义是"看过的最大值"不是当前值。更新语句必须带 WHERE progress < newProgress，否则往回拖进度条会把记录改小、完课判定会乱',
     finished        TINYINT  NOT NULL DEFAULT 0 COMMENT '是否完课。★v1 的 bug：代码里从未把它置 1，导致完课事件反复发。v2 必须在 progress 达 100 时原子置 1',
     finished_at     DATETIME NULL     COMMENT '完课时间（新增列）。有了它，完课事件的幂等键可以用 userId:videoId 派生，不必每次生成新 UUID',
+    finish_event_sent TINYINT NOT NULL DEFAULT 0 COMMENT '完课事件是否已成功发送；0=待定时任务补偿重发，1=已发送。消费端按 userId:videoId 幂等，重发不会重复加分',
+    first_report_at DATETIME NULL     COMMENT '首次上报时间。防刷按"从首次上报到现在的总时长"限制允许进度，避免每 10 秒报一点绕过速率校验',
     last_report_at  DATETIME NULL     COMMENT '上次上报时间，防刷用：要求"新增进度 ≤ 经过秒数×1.5 + 15"，即不可能 10 秒看完 5 分钟视频',
     updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
@@ -311,6 +313,33 @@ CREATE TABLE IF NOT EXISTS t_coupon_store (
     UNIQUE KEY uk_coupon_store (coupon_id, store_id)
 ) ENGINE = InnoDB COMMENT '券-可用门店范围';
 
+-- ----------------------------------------------------------------
+-- 首页活动轮播
+-- 为什么单独一张表而不是查询时把课程/券拼起来：
+--   ① 三类来源字段差异很大（课程没有领券时间、券没有门店），拼出来的"活动"没有稳定主键；
+--   ② 排序、上下架、起止时间要能手工覆盖，不能只跟随来源；
+--   ③ ★Banner 不是独立真相：来源下架/结束/删除时查询必须过滤掉，
+--      这张表只负责"海报长什么样、排第几、什么时候展示"。
+-- (link_type, target_id) 唯一：一个来源最多一张海报，重复保存走更新而不是插新行。
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS t_banner (
+    id         BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    title      VARCHAR(64)  NULL     COMMENT '海报主标题（可不填，前端回退为来源名称）',
+    subtitle   VARCHAR(128) NULL     COMMENT '副标题/一句话卖点',
+    image_url  VARCHAR(255) NOT NULL COMMENT '海报相对路径，如 banner/9f1c.png；展示时加网关前缀访问',
+    link_type  VARCHAR(16)  NOT NULL COMMENT 'COURSE 普通课程 / SECKILL 秒杀活动 / COUPON 优惠券',
+    target_id  BIGINT       NOT NULL COMMENT '来源 id：课程 id / 秒杀活动 id / 券 id',
+    sort_no    INT          NOT NULL DEFAULT 0 COMMENT '越小越靠前',
+    status     TINYINT      NOT NULL DEFAULT 1 COMMENT '1 上架 / 0 下架（来源失效时查询层还会再过滤一次）',
+    start_time DATETIME     NULL     COMMENT '展示开始时间，空=立即',
+    end_time   DATETIME     NULL     COMMENT '展示结束时间，空=长期；秒杀/券默认跟随来源窗口',
+    created_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_link_target (link_type, target_id),
+    KEY idx_status_sort (status, sort_no)
+) ENGINE = InnoDB COMMENT '首页活动轮播';
+
 -- ============================================================
 -- 种子数据（演示用，覆盖 v2 的每一种形态组合）
 -- ============================================================
@@ -359,12 +388,12 @@ INSERT INTO t_course_store (course_id, store_id, sell_start_time, sell_end_time,
 INSERT INTO t_coach (id, store_id, name, title, intro, phone, avatar_color, gender, work_start_hour, work_end_hour, work_days, status) VALUES
 (1, 1, 'Lily', 'AES 认证教练',   '带课五年，最会调动气氛，燃脂课一节不停。', '13800000001', '0', 2,  9, 21, '1,2,3,4,5,6,7', 1),
 (2, 1, 'Kevin','NSCA-CPT',       '力量与核心方向，动作细节抠得很严。',         '13800000002', '1', 1, 10, 21, '1,2,3,4,5,6',   1),
-(3, 2, '苏苏', 'RYT200 认证',    '流瑜伽与阴瑜伽双线，呼吸节奏是她的强项。',   '13800000003', '2', 7, 20, '1,2,3,4,5,6,7', 1),
-(4, 3, '大鹏', '精英骑行/力量教练','单车房和深蹲架两头跑，强度给得很足。',      '13800000004', '1', 8, 22, '2,3,4,5,6,7',   1),
-(5, 3, 'Alan', '运动康复方向',   '体态评估 + 矫正方案，久坐人群找他的最多。',   '13800000005', '1', 9, 18, '1,2,3,4,5',     1),
-(6, 2, '小雨', '普拉提认证',     '垫上普拉提与产后恢复。',                     '13800000006', '2', 9, 21, '1,2,4,5,6',     1),
-(7, 4, '阿泽', 'ACE-CPT',        'CBD 店主力，早课和晚课都能带。',             '13800000007', '1', 10,22, '1,2,3,4,5,6,7', 1),
-(8, 4, '楠楠', '营养与体态管理', '训练加饮食一起管，两周见效那种。',           '13800000008', '2', 9, 20, '1,3,5',         1);
+(3, 2, '苏苏', 'RYT200 认证',    '流瑜伽与阴瑜伽双线，呼吸节奏是她的强项。',   '13800000003', '2', 2, 7, 20, '1,2,3,4,5,6,7', 1),
+(4, 3, '大鹏', '精英骑行/力量教练','单车房和深蹲架两头跑，强度给得很足。',      '13800000004', '1', 1, 8, 22, '2,3,4,5,6,7',   1),
+(5, 3, 'Alan', '运动康复方向',   '体态评估 + 矫正方案，久坐人群找他的最多。',   '13800000005', '1', 1, 9, 18, '1,2,3,4,5',     1),
+(6, 2, '小雨', '普拉提认证',     '垫上普拉提与产后恢复。',                     '13800000006', '2', 2, 9, 21, '1,2,4,5,6',     1),
+(7, 4, '阿泽', 'ACE-CPT',        'CBD 店主力，早课和晚课都能带。',             '13800000007', '1', 1, 10,22, '1,2,3,4,5,6,7', 1),
+(8, 4, '楠楠', '营养与体态管理', '训练加饮食一起管，两周见效那种。',           '13800000008', '2', 2, 9, 20, '1,3,5',         1);
 
 INSERT INTO t_coach_course (coach_id, course_id) VALUES
 (1, 1), (1, 2), (1, 6), (1, 8),

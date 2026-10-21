@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS t_post (
     user_name     VARCHAR(20)  NOT NULL COMMENT '作者昵称<b>快照</b>：读 Feed 不回查用户服务，且改昵称后历史动态保持当时昵称',
     avatar_color  VARCHAR(2)   NOT NULL DEFAULT '0' COMMENT '头像配色下标快照',
     content       VARCHAR(500) NOT NULL COMMENT '正文。上限 500 字由入参 @Size 拦，这里只作兜底',
-    images        VARCHAR(200) NULL     COMMENT '配图相对路径 csv（管理端上传能力接入后可用；一期为空）',
+    images        VARCHAR(1000) NULL    COMMENT '配图访问路径 csv，如 /uploads/post/a.png,/uploads/post/b.png（最多 9 张）',
     topic         VARCHAR(20)  NULL     COMMENT '话题，如"打卡日常"',
     -- ★三档可见性。存一列就够，但"仅好友"的<b>查询策略必须和它分开设计</b>（docs 4.12 K3）：
     --   推荐流与关注流扇出只装 PUBLIC；FRIEND 走拉模式在"好友动态"里查；PRIVATE 只有作者自己看得到。
