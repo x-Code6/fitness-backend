@@ -130,6 +130,14 @@ public class BookingServiceImpl implements BookingService {
     @Override
     public BookingVO create(Long userId, BookingCreateDTO dto) {
 
+        // ===== 第 0 步之前：普通单必须有门店 =====
+        // ★秒杀单的 storeId 允许为空：门店由活动决定，quoteSeckill 会从活动里取。
+        //   这个判断放业务层而不是 DTO 的 @NotNull，因为注解没法表达“秒杀单可以不带”。
+        //   放在消费令牌之前：参数不合法就不该把用户的一次性下单令牌烧掉。
+        if (dto.getActivityId() == null && dto.getStoreId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请选择门店");
+        }
+
         // ===== 第 0 步：原子消费下单令牌（必须排在所有业务动作之前）=====
         // getAndDelete 就是一条 Redis 命令（GETDEL）：取值 + 删除不可分割，
         // 所以两个并发请求里只有一个能拿到东西，另一个拿到 null。
