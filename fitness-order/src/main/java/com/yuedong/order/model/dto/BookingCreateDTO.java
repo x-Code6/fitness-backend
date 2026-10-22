@@ -37,8 +37,13 @@ public class BookingCreateDTO {
     @NotNull(message = "请选择课程")
     private Long courseId;
 
-    /** 在哪家店买。★必填：决定之后能在哪家店约教练 */
-    @NotNull(message = "请选择门店")
+    /**
+     * 在哪家店买。★普通单必填：决定之后能在哪家店约教练。
+     *
+     * <p>秒杀单可以不传：秒杀卖的是“某家店的名额”，门店已经记在活动上，
+     * 服务层会从活动里取。这里不能加 {@code @NotNull}，否则校验会先于业务逻辑
+     * 把“秒杀单不传门店”这个合法请求拦掉。</p>
+     */
     private Long storeId;
 
     /**
