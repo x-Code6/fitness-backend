@@ -59,6 +59,7 @@ public class DashboardAdminController {
                 .coachCount(counts == null ? 0 : counts.getCoachCount())
                 .hotCourses(stat == null || stat.getHotCourses() == null ? List.of() : stat.getHotCourses())
                 .trend(stat == null || stat.getTrend() == null ? List.of() : stat.getTrend())
+                .statusDist(stat == null || stat.getStatusDist() == null ? List.of() : stat.getStatusDist())
                 .build());
     }
 

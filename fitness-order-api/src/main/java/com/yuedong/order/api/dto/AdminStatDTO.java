@@ -53,12 +53,23 @@ public class AdminStatDTO {
     /** 近 7 天每日成交趋势 */
     private List<TrendPoint> trend;
 
+    /** 近 7 天订单状态分布（看板环形图：下单后的去向一眼看清） */
+    private List<StatusCount> statusDist;
+
     /** 热销行：只给名字与份数，名字是订单表里的快照，不再回查课程 */
     @Data
     @Builder
     public static class HotCourse {
         private String name;
         private Integer sold;
+    }
+
+    /** 状态分布行：status 是订单轴的四个枚举值，count 是该状态的订单数 */
+    @Data
+    @Builder
+    public static class StatusCount {
+        private String status;
+        private Integer count;
     }
 
     /** 趋势点：date 已经格式化成 MM-dd（看板横轴直接显示它） */

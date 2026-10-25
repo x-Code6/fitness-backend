@@ -12,6 +12,7 @@ import com.yuedong.order.model.entity.Booking;
 import com.yuedong.order.model.entity.Entitlement;
 import com.yuedong.order.model.entity.Reservation;
 import com.yuedong.order.model.vo.HotCourseRow;
+import com.yuedong.order.model.vo.StatusCountRow;
 import com.yuedong.order.model.vo.TrendRow;
 import com.yuedong.order.service.AdminStatService;
 import lombok.RequiredArgsConstructor;
@@ -97,6 +98,15 @@ public class AdminStatServiceImpl implements AdminStatService {
                     .build());
         }
 
+        // ===== 第 5 步：近 7 天订单状态分布（看板环形图）=====
+        List<AdminStatDTO.StatusCount> statusDist = new ArrayList<>();
+        for (StatusCountRow row : bookingMapper.selectStatusDist(RECENT_DAYS - 1)) {
+            statusDist.add(AdminStatDTO.StatusCount.builder()
+                    .status(row.getStatus())
+                    .count(row.getCount())
+                    .build());
+        }
+
         return AdminStatDTO.builder()
                 .todayOrderCount(todayOrders == null ? 0 : todayOrders.intValue())
                 .todayAmount(todayAmount)
@@ -107,6 +117,7 @@ public class AdminStatServiceImpl implements AdminStatService {
                 .expiringSoon(expiringSoon == null ? 0 : expiringSoon.intValue())
                 .hotCourses(hotCourses)
                 .trend(trend)
+                .statusDist(statusDist)
                 .build();
     }
 

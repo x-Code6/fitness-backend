@@ -52,4 +52,7 @@ public class DashboardVO {
     private List<AdminStatDTO.HotCourse> hotCourses;
 
     private List<AdminStatDTO.TrendPoint> trend;
+
+    /** 近 7 天订单状态分布（环形图数据） */
+    private List<AdminStatDTO.StatusCount> statusDist;
 }
