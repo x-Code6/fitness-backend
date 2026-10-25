@@ -3,6 +3,7 @@ package com.yuedong.order.mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.yuedong.order.model.entity.Booking;
 import com.yuedong.order.model.vo.HotCourseRow;
+import com.yuedong.order.model.vo.StatusCountRow;
 import com.yuedong.order.model.vo.TrendRow;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -146,4 +147,14 @@ public interface BookingMapper extends BaseMapper<Booking> {
             " GROUP BY DATE(created_at)" +
             " ORDER BY MIN(created_at)")
     List<TrendRow> selectTrend(@Param("days") int days);
+
+    /**
+     * 近 N 天订单状态分布（看板环形图）。
+     * <p>★四个状态一次 GROUP BY 全出，不在 Java 里按状态查四次：
+     * 分布图要的就是"合计 100%"，分四次查之间来了新单，占比加起来就不是 100%。</p>
+     */
+    @Select("SELECT status, COUNT(*) AS count FROM t_booking" +
+            " WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL #{days} DAY)" +
+            " GROUP BY status")
+    List<StatusCountRow> selectStatusDist(@Param("days") int days);
 }
