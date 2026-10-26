@@ -298,4 +298,3 @@ curl "http://localhost:8080/api/course/list"
 - [`docs/后端架构设计.md`](docs/后端架构设计.md) — 服务拆分与 MQ 分工的推导
 - [`docs/后端功能与实现思路.md`](docs/后端功能与实现思路.md) — 170 个接口逐服务的实现思路与检查清单
 - [`docs/数据库设计与功能实现说明.md`](docs/数据库设计与功能实现说明.md) — 表结构设计取舍与演进决策记录
-- [`docs/Git流程与开发约定.md`](docs/Git流程与开发约定.md) — 分支模型与提交约定
