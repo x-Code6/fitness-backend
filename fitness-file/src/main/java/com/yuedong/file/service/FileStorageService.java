@@ -73,7 +73,7 @@ public class FileStorageService {
     private static final String DEFAULT_CATEGORY = "common";
 
     /** 单张上限 2MB。★图片上传的绝大多数滥用都是"传一张几十 MB 的图撑满磁盘" */
-    private static final long MAX_SIZE_BYTES = 2L * 1024 * 1024;
+    private static final long MAX_SIZE_BYTES = 5L * 1024 * 1024;
 
     /** 管理端分页单页上限，防止一次把 t_file 全表拉出来 */
     private static final long MAX_PAGE_SIZE = 100L;

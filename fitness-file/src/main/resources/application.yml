@@ -22,8 +22,8 @@ spring:
   #   而不是"图片不能超过 2MB"。两层同时存在，提示才准确、资源才安全
   servlet:
     multipart:
-      max-file-size: 2MB
-      max-request-size: 4MB      # 一次只传一张，留一倍余量给表单其他字段
+      max-file-size: 5MB
+      max-request-size: 8MB      # 一次只传一张，留一倍余量给表单其他字段
 
 # 图片落盘配置
 file:
