@@ -100,7 +100,7 @@
 - **一格一行防并发**：`t_coach_busy` 每小时格一行，把「区间重叠判断」变成「主键冲突判断」，并发抢同一时段靠 `uk_coach_start` 唯一索引兜底；占格按开始时间**升序插入**，让并发请求以同一顺序拿锁，把死锁概率降到最低。
 - **取消规则固化在列上**：`cancel_deadline`（提前 1 小时可取消）入库时算好，取消 SQL 直接 `WHERE cancel_deadline > NOW()`，Java 不算时间、不依赖应用与数据库时钟一致。
 - **到点结算**：每分钟扫 `end_time <= NOW() AND status='BOOKED'` 置 FINISHED 并扣减凭证一次——口径是**下课才算消费**，取消的永远进不来，所以「取消不扣次」不需要额外分支。
-- **评价与评分**：门槛为该订单全部凭证不再 ACTIVE（用完或过期）；一单一评（唯一索引）；写侧与订单同库同事务，零分布式事务。三张统计表用 `INSERT ... ON DUPLICATE KEY UPDATE` 增量维护 sum/count；展示用算术平均，排序与优选标签用**贝叶斯分现算不落库**（参数可调，落库即锁死）。
+- **评价与评分**：门槛为该订单全部凭证不再 ACTIVE（用完或过期）；一单一评（唯一索引）；写侧与订单同库同事务，零分布式事务。三张统计表用 `INSERT ... ON DUPLICATE KEY UPDATE` 增量维护 sum/count；展示用算术平均，排序与优选标签用**贝叶斯分现算不落库**。
 
 ### 4. 秒杀（course + order 协作）
 
@@ -223,52 +223,6 @@ GET /seckill/result?seqId  前端每 500ms 轮询：QUEUEING / SUCCESS(订单号
 - 建表脚本在 `sql/01~08_yd_*.sql`（MySQL 按文件名序自动导入），增量变更在 `sql/upgrade/`。
 - 索引要点：同人同课 / 一人一单 / 一天一打卡全部靠唯一索引兜底；订单按 `(user_id, status)`、`(course_id, user_id, status)` 建索引。
 
-## 快速开始
-
-### 1. 启动中间件（Docker Compose）
-
-```bash
-cd docker
-cp .env.example .env       # 修改 VM_IP 为部署机局域网 IP（Kafka 广播地址必须真实可达）
-docker compose -f docker-compose.middleware.yml up -d
-docker compose -f docker-compose.middleware.yml ps   # 七个容器 Up (healthy)
-```
-
-包含 MySQL 8（首次启动自动执行 `../sql` 建表）、Redis 7（AOF + noeviction）、RabbitMQ 3.13（**需带 x-delayed-message 插件的镜像**）、Nacos 2.4（standalone）、Kafka 3.9（KRaft）、MongoDB 7、Nginx。
-
-> RabbitMQ 延迟插件用于订单超时取消的 `ex.order.delay` 交换机；若镜像不带插件，服务能启动、普通接口正常，唯独延迟消息发不出去。
-
-### 2. 启动后端服务
-
-所有服务支持环境变量覆盖（默认值见各服务 `application.yml`）：
-
-| 变量 | 说明 |
-|---|---|
-| NACOS_ADDR | Nacos 地址（默认 127.0.0.1:8848） |
-| DB_HOST / DB_PORT / DB_USER / DB_PASS | MySQL 连接 |
-| REDIS_HOST / REDIS_PORT | Redis 连接 |
-| MQ_HOST / MQ_USER / MQ_PASS | RabbitMQ 连接 |
-| KAFKA_ADDR | Kafka 地址 |
-| JWT_SECRET | JWT 密钥（网关与 user 服务必须一致） |
-| TOKEN_CHECK | jti 白名单校验开关，演示保持 true |
-
-```bash
-# 方式一：IDEA 逐服务启动（推荐先起 nacos 依赖的 gateway / user，再起其他）
-# 方式二：打包 fat-jar
-mvn clean package -DskipTests
-java -jar fitness-gateway/target/fitness-gateway-*.jar
-```
-
-启动顺序建议：中间件 → gateway → user / course → order（依赖 course 契约）→ 其余服务。
-
-### 3. 验证
-
-```bash
-# Nacos 控制台（8848/nacos）服务列表出现 9 个实例
-# 经网关走一次游客接口：
-curl "http://localhost:8080/api/course/list"
-# RabbitMQ 管理台（15672）能看到 ex.order.delay 为 x-delayed-message 类型
-```
 
 ## 目录结构
 
@@ -291,10 +245,3 @@ curl "http://localhost:8080/api/course/list"
 └── pom.xml                  父 POM：依赖仲裁与插件配置
 ```
 
-## 相关文档
-
-更深入的设计推导与逐条实现思路见 `docs/`：
-
-- [`docs/后端架构设计.md`](docs/后端架构设计.md) — 服务拆分与 MQ 分工的推导
-- [`docs/后端功能与实现思路.md`](docs/后端功能与实现思路.md) — 170 个接口逐服务的实现思路与检查清单
-- [`docs/数据库设计与功能实现说明.md`](docs/数据库设计与功能实现说明.md) — 表结构设计取舍与演进决策记录
