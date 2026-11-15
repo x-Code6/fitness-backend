@@ -3,6 +3,7 @@ package com.yuedong.behavior.service.impl;
 import com.yuedong.common.constant.MqConstants;
 import com.yuedong.common.constant.RedisKeyConstants;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.yuedong.behavior.model.dto.BehaviorEventDTO;
 import com.yuedong.behavior.model.dto.ReportDTO;
 import com.yuedong.behavior.model.vo.HotCourseVO;
 import com.yuedong.behavior.service.BehaviorService;
@@ -43,7 +44,7 @@ public class BehaviorServiceImpl implements BehaviorService {
     public void report(Long userId, ReportDTO dto) {
         // ===== 第 1 步：补全身份并逐条发 Kafka =====
         // 匿名用户 userId 为 null（网关白名单放行），仅以 deviceId 标识
-        for (ReportDTO.Event event : dto.getEvents()) {
+        for (BehaviorEventDTO event : dto.getEvents()) {
             try {
                 Map<String, Object> message = new HashMap<>();
                 message.put("eventId", event.getEventId());

@@ -27,8 +27,8 @@ CREATE TABLE IF NOT EXISTS t_behavior_log (
     PRIMARY KEY (id),
     -- 幂等的 DB 兜底：Redis SETNX behavior:seen:{eventId} 是快路径，
     -- 这条唯一索引保证即使 Redis 异常也不会重复统计。
-    -- ★注意：v1 里 DuplicateKeyException 没被单独捕获，落进了大 catch 只打日志，
-    --   而消费者用的是默认 auto-commit，offset 照样前进 → 消息静默丢失。v2 要改手动 ack。
+    -- ★v2 已补：消费者改手动 ack；先落库，成功后才写 Redis 完成标记；
+    --   落库失败不写标记并抛异常重试，重试耗尽进 DLT，不再静默丢消息。
     UNIQUE KEY uk_event (event_id),
     -- 热度统计与"某类事件按目标聚合"
     KEY idx_type_target (event_type, target_id, created_at),

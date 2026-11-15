@@ -33,4 +33,14 @@ public class KafkaTopicConfig {
     public NewTopic behaviorTopic() {
         return new NewTopic(MqConstants.BEHAVIOR_TOPIC, 3, (short) 1);
     }
+
+    /**
+     * 埋点死信 topic。
+     * <p>★分区数必须和 {@link #behaviorTopic()} 一致：默认死信投递器会把消息发到
+     * 原记录的分区号，目标 topic 分区少会投递失败，消息反而彻底丢掉。</p>
+     */
+    @Bean
+    public NewTopic behaviorDltTopic() {
+        return new NewTopic(MqConstants.BEHAVIOR_DLT_TOPIC, 3, (short) 1);
+    }
 }
