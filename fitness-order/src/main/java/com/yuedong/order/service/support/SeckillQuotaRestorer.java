@@ -1,4 +1,4 @@
-package com.yuedong.order.service;
+package com.yuedong.order.service.support;
 
 import com.yuedong.common.result.Result;
 import com.yuedong.course.api.client.CourseClient;

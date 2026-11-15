@@ -8,7 +8,6 @@ import com.yuedong.order.model.vo.BookingDetailVO;
 import com.yuedong.order.model.vo.BookingPreviewVO;
 import com.yuedong.order.model.vo.BookingVO;
 
-import java.util.List;
 
 /**
  * 订单业务接口（订单轴 = 钱）。
@@ -41,7 +40,7 @@ public interface BookingService {
      * "列表里显示可用、点提交报错 COUPON_NOT_USABLE"。</p>
      *
      * <p>★金额与 {@code create} 用的是同一个算价方法
-     * （{@link BookingPriceCalculator}），所以用户在页面上看到的实付价
+     * （{@link com.yuedong.order.service.support.BookingPriceCalculator}），所以用户在页面上看到的实付价
      * 和最终建单的成交价不会是两个数。</p>
      *
      * @param quantity       份数，null 按 1；超过上限直接报错（不静默截断）

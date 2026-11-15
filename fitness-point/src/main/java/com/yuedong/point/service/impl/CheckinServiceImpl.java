@@ -15,7 +15,7 @@ import com.yuedong.point.model.vo.CheckinTodayVO;
 import com.yuedong.point.model.vo.PointsLogVO;
 import com.yuedong.point.mq.NotifyPublisher;
 import com.yuedong.point.service.CheckinService;
-import com.yuedong.point.service.CheckinTxWriter;
+import com.yuedong.point.service.support.CheckinTxWriter;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;

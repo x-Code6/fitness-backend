@@ -1,9 +1,9 @@
-package com.yuedong.order.service;
+package com.yuedong.order.service.support;
 
 import com.yuedong.order.mapper.BookingMapper;
 import com.yuedong.order.mapper.EntitlementMapper;
 import com.yuedong.order.model.entity.Entitlement;
-import lombok.Getter;
+import com.yuedong.order.model.vo.EntitlementExpireResultVO;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -44,24 +44,24 @@ public class EntitlementExpireTxWriter {
      * @return 本张凭证的处理结果，调用方据此发通知
      */
     @Transactional(rollbackFor = Exception.class)
-    public ExpireResult expireAndRefund(Entitlement entitlement, LocalDateTime now) {
+    public EntitlementExpireResultVO expireAndRefund(Entitlement entitlement, LocalDateTime now) {
         // 改：ACTIVE → EXPIRED。带状态条件，多实例/重跑只有第一个能改成功。
         int expiredRows = entitlementMapper.expireOne(entitlement.getId(), now);
         if (expiredRows == 0) {
-            return ExpireResult.skipped();
+            return EntitlementExpireResultVO.skipped();
         }
 
         int usedTimes = entitlement.getUsedTimes() == null ? 0 : entitlement.getUsedTimes();
         if (usedTimes > 0) {
             // 用过一点的凭证：按 D7 规则剩余不退，只置过期
-            return ExpireResult.expiredNoRefund(usedTimes);
+            return EntitlementExpireResultVO.expiredNoRefund(usedTimes);
         }
 
         // 改：记下这张凭证已退款。条件是"已过期 + 一次没用 + 没退过"，保证只退一次。
         int refundedRows = entitlementMapper.markRefunded(entitlement.getId(), now);
         if (refundedRows == 0) {
             // 已经退过（重复扫描/人工重放），本次只算过期，不再退钱
-            return ExpireResult.expiredNoRefund(0);
+            return EntitlementExpireResultVO.expiredNoRefund(0);
         }
 
         BigDecimal refundAmount = entitlement.getPaidAmount() == null
@@ -76,44 +76,12 @@ public class EntitlementExpireTxWriter {
                 // 没有第二笔钱可退。金额以订单已有的终态为准。
                 log.warn("订单不是 PAID，无法累加退款，凭证仍置过期: orderNo={}, entitlementId={}",
                         entitlement.getOrderNo(), entitlement.getId());
-                return ExpireResult.expiredNoRefund(0);
+                return EntitlementExpireResultVO.expiredNoRefund(0);
             }
         }
 
         log.info("凭证过期并按张退款: entitlementId={}, orderNo={}, 退款={}",
                 entitlement.getId(), entitlement.getOrderNo(), refundAmount);
-        return ExpireResult.refunded(refundAmount);
-    }
-
-    /** 一张凭证的处理结果，只用于调用方发不同文案 */
-    @Getter
-    public static class ExpireResult {
-
-        /** 是否真的完成了"ACTIVE → EXPIRED"（false = 已被别的实例/上一轮处理） */
-        private final boolean expired;
-
-        /** 已使用次数，用来区分"没用过"和"用过不退" */
-        private final int usedTimes;
-
-        /** 本次退款金额；0 表示没有退款 */
-        private final BigDecimal refundAmount;
-
-        private ExpireResult(boolean expired, int usedTimes, BigDecimal refundAmount) {
-            this.expired = expired;
-            this.usedTimes = usedTimes;
-            this.refundAmount = refundAmount;
-        }
-
-        public static ExpireResult skipped() {
-            return new ExpireResult(false, 0, BigDecimal.ZERO);
-        }
-
-        public static ExpireResult expiredNoRefund(int usedTimes) {
-            return new ExpireResult(true, usedTimes, BigDecimal.ZERO);
-        }
-
-        public static ExpireResult refunded(BigDecimal refundAmount) {
-            return new ExpireResult(true, 0, refundAmount);
-        }
+        return EntitlementExpireResultVO.refunded(refundAmount);
     }
 }

@@ -19,6 +19,7 @@ import org.springframework.amqp.core.Message;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
+import java.time.LocalDateTime;
 
 /**
  * 订单超时取消消费者：下单 15 分钟后仍未支付 → 自动取消并退回优惠券。
@@ -47,7 +48,7 @@ public class BookingTimeoutConsumer {
     private final NotifyPublisher notifyPublisher;
 
     /** 秒杀名额回补（Redis 库存 +1、资格集合摘人，课程 DB remain 也 +1） */
-    private final com.yuedong.order.service.SeckillQuotaRestorer seckillQuotaRestorer;
+    private final com.yuedong.order.service.support.SeckillQuotaRestorer seckillQuotaRestorer;
 
     // ★ackMode=MANUAL：方法体自己 basicAck/basicNack，容器默认是 AUTO 会再 ack 一次，
     //   第二次 ack 的是已经不存在的 delivery tag → broker 关信道（PRECONDITION_FAILED
@@ -67,7 +68,7 @@ public class BookingTimeoutConsumer {
             }
 
             // ===== 第 2 步：CAS 取消。并发下（用户正好在支付）只有一个能改成功 =====
-            int rows = bookingMapper.cancelIfUnpaid(msg.getOrderNo(), java.time.LocalDateTime.now());
+            int rows = bookingMapper.cancelIfUnpaid(msg.getOrderNo(), LocalDateTime.now());
             if (rows > 0) {
                 // ===== 第 3 步：秒杀单先退名额 =====
                 // ★顺序上放在退券之前：名额是活动侧的稀缺资源，越早回去越少丢单。

@@ -42,7 +42,6 @@ public class PostViewServiceImpl implements PostViewService {
     private static final Duration DEDUPE_TTL = Duration.ofDays(3);
 
     /** 刷库互斥锁：多实例部署时只让一个实例扣 Redis 增量。55 秒 > 任务 30 秒间隔 */
-    private static final String FLUSH_LOCK_KEY = "lock:postview:flush";
     private static final Duration FLUSH_LOCK_TTL = Duration.ofSeconds(55);
 
     private final StringRedisTemplate redis;
@@ -110,7 +109,8 @@ public class PostViewServiceImpl implements PostViewService {
         // 没有锁时两个实例会读到同一份 Hash 快照，各自 -delta 再写库，浏览数翻倍。
         // 锁是"尽力而为"：TTL 55 秒，任务 fixedDelay 30 秒；极长任务仍可能重叠，但概率很低。
         String lockToken = UUID.randomUUID().toString();
-        Boolean locked = redis.opsForValue().setIfAbsent(FLUSH_LOCK_KEY, lockToken, FLUSH_LOCK_TTL);
+        Boolean locked = redis.opsForValue().setIfAbsent(
+                RedisKeyConstants.POST_VIEW_FLUSH_LOCK, lockToken, FLUSH_LOCK_TTL);
         if (!Boolean.TRUE.equals(locked)) {
             log.info("浏览量刷库任务已被其他实例持有，本轮跳过");
             return 0;
@@ -149,8 +149,8 @@ public class PostViewServiceImpl implements PostViewService {
         } finally {
             // 只释放自己的锁：token 不匹配说明锁已过期并被别的实例拿到，不能删别人的
             try {
-                if (lockToken.equals(redis.opsForValue().get(FLUSH_LOCK_KEY))) {
-                    redis.delete(FLUSH_LOCK_KEY);
+                if (lockToken.equals(redis.opsForValue().get(RedisKeyConstants.POST_VIEW_FLUSH_LOCK))) {
+                    redis.delete(RedisKeyConstants.POST_VIEW_FLUSH_LOCK);
                 }
             } catch (Exception e) {
                 log.warn("释放浏览量刷库锁失败，等待 TTL 自动过期: {}", e.getMessage());

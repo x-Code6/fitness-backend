@@ -130,7 +130,7 @@ public class Entitlement {
      * （有效期最后一天约晚上的课，用 now 判会误放行）。
      * 规则在两个地方各自实现迟早会漂移，所以只留这一份。</p>
      */
-    public boolean bookableAt(java.time.LocalDateTime moment, int pendingCount) {
+    public boolean bookableAt(LocalDateTime moment, int pendingCount) {
         if (!com.yuedong.order.constant.EntitlementStatus.ACTIVE.equals(this.status)) {
             return false;
         }
@@ -147,7 +147,7 @@ public class Entitlement {
      * 创建预约时问的是"这一节上完之前会不会先过期"，和"现在能不能约"是两件事，
      * 混在一个方法里迟早出现"为了判时间顺手把状态也判了"的重复校验。
      */
-    public boolean validCovers(java.time.LocalDateTime moment) {
+    public boolean validCovers(LocalDateTime moment) {
         return this.validUntil == null || this.validUntil.isAfter(moment);
     }
 

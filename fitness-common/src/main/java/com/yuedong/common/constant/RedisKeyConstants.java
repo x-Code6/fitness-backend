@@ -49,6 +49,12 @@ public final class RedisKeyConstants {
     /** 课程详情空值缓存（防穿透），TTL 2 分钟 */
     public static final String COURSE_EMPTY = "course:empty:";
 
+    /**
+     * 课程详情门店级上下文缓存（评分、门店列表、教练数、门店规则），TTL 60 秒。
+     * <p>★更新不主动删除，靠 60 秒 TTL 收敛；键是 courseId + storeId，冷键会很快过期回收。</p>
+     */
+    public static final String COURSE_DETAIL_CONTEXT = "course:detail:ctx:";
+
     /** 课程详情互斥重建锁（Redisson） */
     public static final String COURSE_LOCK = "course:lock:detail:";
 
@@ -58,6 +64,10 @@ public final class RedisKeyConstants {
 
     public static String courseEmpty(Long id) {
         return COURSE_EMPTY + id;
+    }
+
+    public static String courseDetailContext(Long courseId, Long storeId) {
+        return COURSE_DETAIL_CONTEXT + courseId + ":" + (storeId == null ? "none" : storeId);
     }
 
     // ==================== 优惠券域（course 服务承载，Lua 原子领券） ====================
@@ -115,8 +125,15 @@ public final class RedisKeyConstants {
     /** 课程点击热度榜，ZSet（yyyyMM 由使用方拼接），TTL 40 天 */
     public static final String BEHAVIOR_HOT_COURSE = "behavior:hot:course:";
 
+    /** 埋点事件消费去重，String，SETNX + 24h TTL */
+    public static final String BEHAVIOR_SEEN = "behavior:seen:";
+
     public static String behaviorHotCourse(String yyyyMM) {
         return BEHAVIOR_HOT_COURSE + yyyyMM;
+    }
+
+    public static String behaviorSeen(String eventId) {
+        return BEHAVIOR_SEEN + eventId;
     }
 
     // ==================== 社区域（community 服务） ====================
@@ -151,6 +168,9 @@ public final class RedisKeyConstants {
      * 以及机器时钟略偏，都不该让用户"今天永远计不上"。过期即自动清理，不需要任务。</p>
      */
     public static final String POST_VIEWED = "post:viewed:";
+
+    /** 浏览量刷库互斥锁，String，SETNX + 55 秒 TTL（任务间隔 30 秒） */
+    public static final String POST_VIEW_FLUSH_LOCK = "lock:postview:flush";
 
     public static String postViewed(String yyyyMMdd) {
         return POST_VIEWED + yyyyMMdd;

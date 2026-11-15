@@ -3,7 +3,7 @@ package com.yuedong.point.mq.consumer;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yuedong.common.constant.MqConstants;
 import com.yuedong.common.constant.RedisKeyConstants;
-import com.yuedong.point.service.PointsTxWriter;
+import com.yuedong.point.service.support.PointsTxWriter;
 import com.yuedong.point.mq.NotifyPublisher;
 import com.rabbitmq.client.Channel;
 import lombok.RequiredArgsConstructor;
@@ -81,7 +81,7 @@ public class CourseFinishedConsumer {
             Long userId = ((Number) userIdValue).longValue();
             String videoTitle = String.valueOf(event.getOrDefault("videoTitle", ""));
             int points = ((Number) event.getOrDefault("points", 30)).intValue();
-            idempotentKey = "idempotent:msg:" + eventId;
+            idempotentKey = RedisKeyConstants.idempotentMsg(eventId);
 
             // ===== 第 2 步：Redis 快路径（省一次 DB 写），真正的防线是 t_points_log.uk_biz =====
             // ★这个 key 必须在"入账失败"时删掉，否则重投会被误判成重复、直接 ack。

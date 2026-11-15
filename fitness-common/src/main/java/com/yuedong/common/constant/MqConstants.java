@@ -73,8 +73,18 @@ public final class MqConstants {
     public static final String ROUTING_NOTIFY_POINT = "notify.point";
     public static final String ROUTING_NOTIFY_COMMUNITY = "notify.community";
 
+    /** 通知队列的全域绑定：接收 notify.* 下所有业务域的事件 */
+    public static final String ROUTING_NOTIFY_ALL = "notify.#";
+
     // ==================== Kafka：行为埋点流（behavior 服务） ====================
 
     /** 埋点事件 topic，3 分区，key=deviceId 保证单设备顺序 */
     public static final String BEHAVIOR_TOPIC = "yd-behavior-event";
+
+    /**
+     * 埋点死信 topic：重试耗尽后仍失败的消息落这里，避免静默丢失。
+     * <p>★分区数必须和源 topic 一致（这里都是 3）：Spring Kafka 默认把死信投到
+     * <b>原分区号</b>，目标 topic 分区少会直接投递失败。</p>
+     */
+    public static final String BEHAVIOR_DLT_TOPIC = BEHAVIOR_TOPIC + ".DLT";
 }

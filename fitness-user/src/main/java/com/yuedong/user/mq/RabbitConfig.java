@@ -18,8 +18,6 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 public class RabbitConfig {
 
-    public static final String USER_NOTIFY_QUEUE = "q.user.notify";
-
     @Bean
     public TopicExchange notifyExchange() {
         return new TopicExchange(MqConstants.NOTIFY_EXCHANGE, true, false);
@@ -27,11 +25,12 @@ public class RabbitConfig {
 
     @Bean
     public Queue userNotifyQueue() {
-        return QueueBuilder.durable(USER_NOTIFY_QUEUE).build();
+        return QueueBuilder.durable(MqConstants.USER_NOTIFY_QUEUE).build();
     }
 
     @Bean
     public Binding userNotifyBinding() {
-        return BindingBuilder.bind(userNotifyQueue()).to(notifyExchange()).with("notify.#");
+        return BindingBuilder.bind(userNotifyQueue()).to(notifyExchange())
+                .with(MqConstants.ROUTING_NOTIFY_ALL);
     }
 }

@@ -20,7 +20,7 @@ import org.springframework.context.annotation.Configuration;
  * broker 直接回 {@code PRECONDITION_FAILED - inequivalent arg 'type'}，
  * 而且这条错误是从"启动时声明拓扑"那个后台线程抛的——服务能起来，但队列永远绑不上，
  * 表现就是"完课了积分却没加"，很难往 MQ 声明这块想。
- * course 用的是 TopicExchange（见 {@code com.yuedong.course.config.RabbitConfig}），
+ * course 用的是 TopicExchange（见 {@code com.yuedong.course.mq.RabbitConfig}），
  * 这里以前写的是 DirectExchange，两边谁先启动都会撞车，现在统一成 Topic。
  * 路由键 {@code course.finished} 在 Topic 下是精确匹配，行为不变。</p>
  */
@@ -66,7 +66,7 @@ public class RabbitConfig {
 
     // ---------- 站内通知事件交换机（生产者：point/order/community；消费者：user 服务） ----------
     @Bean
-    public org.springframework.amqp.core.TopicExchange notifyExchange() {
-        return new org.springframework.amqp.core.TopicExchange(MqConstants.NOTIFY_EXCHANGE, true, false);
+    public TopicExchange notifyExchange() {
+        return new TopicExchange(MqConstants.NOTIFY_EXCHANGE, true, false);
     }
 }

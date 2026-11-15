@@ -4,7 +4,6 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 
-import java.util.List;
 
 /** 关注/粉丝/共同关注列表条目（昵称经 Feign 批量补齐）。 */
 @Data

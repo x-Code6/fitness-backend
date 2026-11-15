@@ -9,6 +9,7 @@ import org.springframework.amqp.core.CustomExchange;
 import org.springframework.amqp.core.DirectExchange;
 import org.springframework.amqp.core.Queue;
 import org.springframework.amqp.core.QueueBuilder;
+import org.springframework.amqp.core.TopicExchange;
 import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.boot.autoconfigure.amqp.RabbitTemplateCustomizer;
 import org.springframework.context.annotation.Bean;
@@ -40,8 +41,8 @@ public class RabbitConfig {
     // ---------- 站内通知事件（user 服务消费后生成站内消息） ----------
 
     @Bean
-    public org.springframework.amqp.core.TopicExchange notifyExchange() {
-        return new org.springframework.amqp.core.TopicExchange(MqConstants.NOTIFY_EXCHANGE, true, false);
+    public TopicExchange notifyExchange() {
+        return new TopicExchange(MqConstants.NOTIFY_EXCHANGE, true, false);
     }
 
     // ---------- 死信交换机与队列 ----------

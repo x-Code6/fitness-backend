@@ -13,10 +13,11 @@ import com.yuedong.order.constant.OrderConstants;
 import com.yuedong.order.mapper.EntitlementMapper;
 import com.yuedong.order.model.entity.Booking;
 import com.yuedong.order.model.entity.Entitlement;
+import com.yuedong.order.model.vo.EntitlementExpireResultVO;
 import com.yuedong.order.model.vo.EntitlementVO;
 import com.yuedong.order.model.vo.ReservationCountRow;
 import com.yuedong.order.mq.NotifyPublisher;
-import com.yuedong.order.service.EntitlementExpireTxWriter;
+import com.yuedong.order.service.support.EntitlementExpireTxWriter;
 import com.yuedong.order.service.EntitlementService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -298,7 +299,7 @@ public class EntitlementServiceImpl implements EntitlementService {
             // ===== 第 2 步：置过期 + 按张退款，同一个事务 =====
             // 事务里先 CAS 置 EXPIRED，再按这张凭证的 paid_amount 退款；
             // 任一步失败整体回滚，下一轮任务还能重新捞到它。
-            EntitlementExpireTxWriter.ExpireResult result =
+            EntitlementExpireResultVO result =
                     entitlementExpireTxWriter.expireAndRefund(entitlement, now);
             if (!result.isExpired()) {
                 // 被别的实例/上一轮处理过了

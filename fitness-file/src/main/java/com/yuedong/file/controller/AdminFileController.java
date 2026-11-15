@@ -2,7 +2,9 @@ package com.yuedong.file.controller;
 
 import com.yuedong.common.model.PageDTO;
 import com.yuedong.common.result.Result;
+import com.yuedong.file.auth.AdminIdentity;
 import com.yuedong.file.auth.AdminJwtVerifier;
+import com.yuedong.file.constant.FileConstants;
 import com.yuedong.file.model.vo.FileRecordVO;
 import com.yuedong.file.model.vo.UploadVO;
 import com.yuedong.file.service.FileStorageService;
@@ -49,9 +51,9 @@ public class AdminFileController {
             @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorization,
             @RequestParam("file") MultipartFile file,
             @RequestParam(value = "category", required = false, defaultValue = "common") String category) {
-        AdminJwtVerifier.AdminIdentity admin = adminJwtVerifier.verify(authorization);
+        AdminIdentity admin = adminJwtVerifier.verify(authorization);
         UploadVO vo = fileStorageService.saveImage(
-                file, category, FileStorageService.UPLOADER_TYPE_ADMIN, admin.adminId());
+                file, category, FileConstants.UPLOADER_TYPE_ADMIN, admin.adminId());
         return Result.ok(vo);
     }
 

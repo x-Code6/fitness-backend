@@ -1,6 +1,8 @@
 package com.yuedong.user.mq;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.yuedong.common.constant.MqConstants;
+import com.yuedong.common.constant.RedisKeyConstants;
 import com.yuedong.user.mapper.MessageMapper;
 import com.yuedong.user.model.entity.Message;
 import com.rabbitmq.client.Channel;
@@ -42,7 +44,7 @@ public class NotifyEventConsumer {
      * 表现是消费者每隔一会儿就"Restarting Consumer"，日志里全是信道错误。
      * 手动确认就得明确声明手动，两边只能有一方负责 ack。
      */
-    @RabbitListener(queues = RabbitConfig.USER_NOTIFY_QUEUE, ackMode = "MANUAL")
+    @RabbitListener(queues = MqConstants.USER_NOTIFY_QUEUE, ackMode = "MANUAL")
     public void onMessage(String json, org.springframework.amqp.core.Message amqpMessage, Channel channel) throws IOException {
         long deliveryTag = amqpMessage.getMessageProperties().getDeliveryTag();
         String idempotentKey = null;
@@ -57,7 +59,7 @@ public class NotifyEventConsumer {
                 throw new IllegalArgumentException("通知事件缺少 eventId 或 userId");
             }
             String eventId = String.valueOf(eventIdValue);
-            idempotentKey = "idempotent:msg:" + eventId;
+            idempotentKey = RedisKeyConstants.idempotentMsg(eventId);
             Boolean first = redis.opsForValue().setIfAbsent(
                     idempotentKey, "1", Duration.ofHours(24));
             if (!Boolean.TRUE.equals(first)) {

@@ -1,4 +1,4 @@
-package com.yuedong.point.service;
+package com.yuedong.point.service.support;
 
 import com.yuedong.common.exception.BusinessException;
 import com.yuedong.common.result.ErrorCode;

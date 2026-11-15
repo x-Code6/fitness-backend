@@ -1,4 +1,4 @@
-package com.yuedong.point.service;
+package com.yuedong.point.service.support;
 
 import com.yuedong.point.mapper.MemberPointsMapper;
 import com.yuedong.point.mapper.PointsLogMapper;

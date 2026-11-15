@@ -7,7 +7,6 @@ import com.yuedong.order.api.dto.BookingDTO;
 import com.yuedong.order.api.dto.OrderAdminDetailDTO;
 import com.yuedong.order.service.AdminStatService;
 import com.yuedong.order.service.BookingService;
-import jakarta.validation.constraints.NotBlank;
 import lombok.RequiredArgsConstructor;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -16,7 +15,6 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.util.List;
 
 /**
  * 订单服务内部接口（管理端订单管理经 admin-server 转发调用；网关拒绝外部直访 /inner/**）。

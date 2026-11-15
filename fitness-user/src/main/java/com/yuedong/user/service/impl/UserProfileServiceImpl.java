@@ -19,7 +19,7 @@ import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -71,7 +71,7 @@ public class UserProfileServiceImpl implements UserProfileService {
             profile = new UserProfile();
             profile.setUserId(userId);
             profile.setTrackMetrics(toJson(BodyMetric.allCodes()));
-            profile.setCreatedAt(java.time.LocalDateTime.now());
+            profile.setCreatedAt(LocalDateTime.now());
         }
         if (dto.getGoal() != null) {
             profile.setGoal(dto.getGoal());
@@ -94,7 +94,7 @@ public class UserProfileServiceImpl implements UserProfileService {
         if (dto.getTrackMetrics() != null) {
             profile.setTrackMetrics(toJson(dto.getTrackMetrics()));
         }
-        profile.setUpdatedAt(java.time.LocalDateTime.now());
+        profile.setUpdatedAt(LocalDateTime.now());
 
         if (isNew) {
             // 增：一人一行，主键就是 user_id，重复插入会直接撞主键——这就是"不会建出两份档案"的保证

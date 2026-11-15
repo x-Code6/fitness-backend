@@ -4,6 +4,7 @@ import com.yuedong.common.constant.HttpConstants;
 import com.yuedong.common.exception.BusinessException;
 import com.yuedong.common.result.ErrorCode;
 import com.yuedong.common.result.Result;
+import com.yuedong.file.constant.FileConstants;
 import com.yuedong.file.model.vo.UploadVO;
 import com.yuedong.file.service.FileStorageService;
 import lombok.RequiredArgsConstructor;
@@ -61,7 +62,7 @@ public class UserFileController {
                     "用户端只允许上传 avatar/post/community 分类的图片");
         }
         UploadVO vo = fileStorageService.saveImage(
-                file, trimmedCategory, FileStorageService.UPLOADER_TYPE_USER, userId);
+                file, trimmedCategory, FileConstants.UPLOADER_TYPE_USER, userId);
         return Result.ok(vo);
     }
 

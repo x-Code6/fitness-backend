@@ -31,14 +31,15 @@ import com.yuedong.order.model.entity.Entitlement;
 import com.yuedong.order.model.entity.Reservation;
 import com.yuedong.order.model.vo.BookingDetailVO;
 import com.yuedong.order.model.vo.BookingPreviewVO;
+import com.yuedong.order.model.vo.BookingQuoteVO;
 import com.yuedong.order.model.vo.CouponOptionVO;
 import com.yuedong.order.model.vo.BookingVO;
 import com.yuedong.order.model.vo.EntitlementVO;
 import com.yuedong.order.mq.NotifyPublisher;
 import com.yuedong.order.mq.message.OrderTimeoutMessage;
-import com.yuedong.order.service.BookingPriceCalculator;
+import com.yuedong.order.service.support.BookingPriceCalculator;
 import com.yuedong.order.service.BookingService;
-import com.yuedong.order.service.BookingTxWriter;
+import com.yuedong.order.service.support.BookingTxWriter;
 import com.yuedong.order.service.EntitlementService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -106,9 +107,9 @@ public class BookingServiceImpl implements BookingService {
     private final BookingTxWriter bookingTxWriter;
 
     /** 秒杀名额与资格的原子扣减（★只在提交那一刻调，试算不碰） */
-    private final com.yuedong.order.service.SeckillStockGateway seckillStock;
+    private final com.yuedong.order.service.support.SeckillStockGateway seckillStock;
     /** 取消/超时/建单失败时，把 Redis 与 DB 两处名额一起回补 */
-    private final com.yuedong.order.service.SeckillQuotaRestorer seckillQuotaRestorer;
+    private final com.yuedong.order.service.support.SeckillQuotaRestorer seckillQuotaRestorer;
     /**
      * Redis：只用来存下单令牌（一次性，10 分钟）。
      * <p>★它不是"缓存"，是<b>正确性依赖</b>：Redis 挂了发不出令牌、下不了单。
@@ -156,7 +157,7 @@ public class BookingServiceImpl implements BookingService {
         // ===== 第 1 步：算价（★和 /booking/preview 调的是同一个入口）=====
         // 课程快照、可售判定、份数上限、券可用性、四个金额全部由算价一次给全；
         // 秒杀走 quoteSeckill：门店由活动决定、份数锁 1、不允许用券、价格取活动价。
-        BookingPriceCalculator.Quote quote;
+        BookingQuoteVO quote;
         if (dto.getActivityId() == null) {
             quote = priceCalculator.quote(userId, dto.getCourseId(), dto.getStoreId(),
                     dto.getQuantity(), dto.getCouponRecordId(), false);
@@ -302,7 +303,7 @@ public class BookingServiceImpl implements BookingService {
         //   "试算 19.9、成交 29.9"这种事就出来了。
         // ★秒杀态忽略 storeId/quantity/couponRecordId：门店由活动决定、份数锁 1、不给用券。
         //   这里只是把界面数字算出来，<b>不扣任何库存</b>——用户点进确认页不等于抢购成功。
-        BookingPriceCalculator.Quote quote = activityId == null
+        BookingQuoteVO quote = activityId == null
                 ? priceCalculator.quote(userId, courseId, requireStoreId(storeId), quantity, couponRecordId, true)
                 : priceCalculator.quoteSeckill(userId, courseId, activityId);
         CourseDTO course = quote.getCourse();

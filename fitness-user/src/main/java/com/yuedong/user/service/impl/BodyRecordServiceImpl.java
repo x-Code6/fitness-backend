@@ -9,6 +9,7 @@ import com.yuedong.user.model.entity.UserProfile;
 import com.yuedong.user.model.dto.BodyRecordSaveDTO;
 import com.yuedong.user.model.vo.BodyViews;
 import com.yuedong.user.service.BodyRecordService;
+import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DuplicateKeyException;
@@ -16,6 +17,7 @@ import org.springframework.data.domain.Sort;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.aggregation.Aggregation;
 import org.springframework.data.mongodb.core.aggregation.AggregationResults;
+import org.springframework.data.mongodb.core.mapping.Field;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.data.mongodb.core.query.Update;
@@ -281,9 +283,9 @@ public class BodyRecordServiceImpl implements BodyRecordService {
      * 用 Jackson 注解等于没写，$project 出来的 record_date 落不进 date，
      * 趋势图会拿到一列 null 日期。</p>
      */
-    @lombok.Data
+    @Data
     public static class TrendPoint {
-        @org.springframework.data.mongodb.core.mapping.Field("record_date")
+        @Field("record_date")
         private String date;
         private BigDecimal value;
     }
