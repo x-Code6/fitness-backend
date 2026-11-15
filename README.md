@@ -2,10 +2,10 @@
 
 「悦动健身 —— 课程预约与运动社区平台」的微服务后端，覆盖课程购买、教练预约、限时秒杀、优惠券、运动社区、积分打卡、身体数据、行为埋点与运营管理后台。
 
-- **170 个接口**：对外 78（24 个 Controller）· 管理端 39（14 个）· 服务间 53（11 个 `/inner/**`）
+- **184 个接口**：对外 80（26 个 Controller）· 管理端 44（15 个）· 服务间 60（13 个 `/inner/**`）
 - **8 个 MySQL 业务库 · 39 张表**，另有 MongoDB 存储每日身体记录
-- **24 个 Redis Key**：缓存、登录令牌白名单、打卡位图、排行榜 ZSet、门店 GEO、幂等锁
-- **5 个定时任务 · 5 个消息消费者**，RabbitMQ 与 Kafka 双消息队列按场景分工
+- **25 个 Redis Key 前缀**：缓存、登录令牌白名单、打卡位图、排行榜 ZSet、门店 GEO、幂等锁
+- **9 个定时任务 · 4 个消息消费者**，RabbitMQ 与 Kafka 双消息队列按场景分工
 
 ## 技术栈
 
@@ -97,18 +97,21 @@
 ### 4. 秒杀（course + order 协作）
 
 ```text
-[每 30 秒] 定时扫描将开始的活动 → 先 SET Redis 库存，再 CAS 翻开活动状态
+[每 30 秒] 扫描到点开始/结束的活动 → 先 SET Redis 库存，再 CAS 翻活动状态
            （顺序保证不存在"状态开放但库存未就绪"的空窗）
-POST /seckill/book（order 服务）
-  ① Feign 查进行中活动 → ② 预写排队结果 QUEUEING
-  ③ Lua 原子：库存 DECR + 一人一单 SISMEMBER/SADD（失败码区分售罄/重复）
-  ④ 投 RabbitMQ（q.order.seckill.create）削峰 → 返回排队号 seqId
-消费者：幂等检查 → 建单（DB 扣份数）→ 结果写 Redis → 失败回补库存并进死信队列
-GET /seckill/result?seqId  前端每 500ms 轮询：QUEUEING / SUCCESS(订单号) / FAIL(原因)
+[每 60 秒] 补进行中活动缺失的库存 key（Redis 重启/被清后不会永远显示售罄）
+
+POST /api/booking/create（order 服务，带 activityId）
+  ① quoteSeckill 试算：门店由活动决定、份数锁 1、不允许用券、价格取活动价
+  ② Lua 原子：库存 DECR + 一人一单 SADD，返回码区分售罄 / 重复
+  ③ 同步扣课程库 remain（Feign /inner/course/seckill/deduct）
+  ④ 同步落单，抢到当场返回订单号；抢不到当场抛「已售罄 / 已达限购」
+  ⑤ 任一步失败：Lua 回补 Redis 库存与资格 + DB remain 一起回补
 ```
 
-- 活动列表与课程信息联查归 course，抢课与轮询结果归 order，网关按精确路径优先路由。
-- Redis 库存为准、DB `remain` 是账本；消费失败 Lua INCR 回补。
+- 抢购是**同步**的，没有排队号也没有轮询：用户点一下就知道结果，失败原因直接可读。
+- 活动列表与课程信息联查归 course，抢购与建单归 order，网关按精确路径优先路由。
+- Redis 库存挡峰值、DB `remain` 是账本；两边差额靠"扣减失败即回补"与库存修复任务收敛，不追求跨服务事务。
 
 ### 5. 优惠券（course）
 
@@ -174,7 +177,7 @@ GET /seckill/result?seqId  前端每 500ms 轮询：QUEUEING / SUCCESS(订单号
 | 值得防·变体 | 同一份意向只能兑现一次 | 一次性令牌：GETDEL 原子消费，用掉即废 | 下单消费 preview 预发的 orderNo |
 | 不防 | 低频管理动作，错了重做 | 直接写，靠唯一索引自然拦 | 配课、门店、启停教练、图片上传 |
 
-**双 MQ 分工**：业务指令类消息（要路由 / 延迟 / 死信 / 确认）走 RabbitMQ——秒杀建单、延迟取消、积分事件、站内通知；高吞吐追加写（按 key 保序、可重放）走 Kafka——行为埋点流。
+**双 MQ 分工**：业务指令类消息（要路由 / 延迟 / 死信 / 确认）走 RabbitMQ——订单延迟取消、积分事件、站内通知；高吞吐追加写（按 key 保序、可重放）走 Kafka——行为埋点流。
 
 **消费幂等三层**：`eventId` SETNX（快）→ 数据库唯一索引（稳）→ 异常仅记日志不阻断消费组。
 
@@ -186,13 +189,16 @@ GET /seckill/result?seqId  前端每 500ms 轮询：QUEUEING / SUCCESS(订单号
 
 | 任务 / 消费者 | 触发 | 职责 | 为什么不需要分布式锁 |
 |---|---|---|---|
-| 秒杀活动扫描 | 每 30 秒 | 到点预热库存到 Redis、到点结束活动 | 状态翻转 `WHERE status=0` CAS，多实例只有一个改得动 |
+| SeckillActivityScanTask | 每 30 秒 | 到点预热库存到 Redis、到点结束活动 | 状态翻转 `WHERE status=0` CAS，多实例只有一个改得动 |
+| SeckillActivityScanTask.repairActiveStock | 每分钟 | 补进行中活动缺失的库存 key（Redis 重启后不会永远售罄） | 只补不存在的 key，已存在的不覆盖，重复执行无副作用 |
+| CouponStockRepairTask | 每分钟 | 补秒杀券的库存 key | 同上，只补缺失 |
 | ReservationSettleTask | 每分钟 | 下课的预约置 FINISHED + 扣凭证一次 | `WHERE status='BOOKED' AND end_time<=NOW()`，重跑影响 0 行 |
 | EntitlementExpireTask | 每小时 | 过期凭证置 EXPIRED；一次没用过的推订单退款 | 全程带状态条件，CAS 重跑安全 |
 | RankArchiveTask | 每月 1 日 00:10 | 上月榜归档 + 旧 key 设 TTL | upsert + 复合主键，重跑安全 |
 | PostViewFlushTask | 每 30 秒 fixedDelay | 浏览增量原子刷入 view_count | fixedDelay 天然串行 |
+| VideoFinishEventRetryTask | 每分钟 | 重投"已完课但事件没发出去"的记录 | 发送成功才标记，重投幂等 |
+| BookingTimeoutCompensateTask | 每分钟 | 补投"未支付但延迟消息丢了"的订单 | 消费侧按状态 CAS，重复投递无副作用 |
 | BookingTimeoutConsumer | RabbitMQ | 15 分钟超时取消 | 状态 CAS；失败 `requeue=false` 进 DLX |
-| SeckillCreateConsumer | RabbitMQ | 秒杀异步建单 + DB 扣份数 | 幂等键 + 状态判断；失败回补 Redis |
 | CourseFinishedConsumer | RabbitMQ | 完课 +30 积分 | 业务键 `userId:videoId` 两层幂等 |
 | NotifyEventConsumer | RabbitMQ | 事件 → 站内消息（topic 交换机按 notify.* 分发） | 通知重复一次不影响业务 |
 | BehaviorEventConsumer | Kafka | 埋点落明细 + 热度榜 ZINCRBY | eventId SETNX 快路径 + `uk_event` 唯一索引兜底；手动 ack，失败重试后进 DLT |
@@ -239,8 +245,8 @@ fitness-backend/
 
 ## 相关文档
 
-更深入的设计推导与逐条实现思路见仓库 `docs/`：
+更深入的设计推导与实现思路见仓库 `docs/`。三份文档按时间分层，**以代码为最新事实**：
 
-- `后端架构设计.md` — 服务拆分与 MQ 分工的推导
-- `后端功能与实现思路.md` — 170 个接口逐服务的实现思路与检查清单
-- `数据库设计与功能实现说明.md` — 表结构设计取舍与演进决策记录
+- `后端架构设计.md` — 服务拆分与 MQ 分工的推导（2026-10-14 定稿，属历史文档；秒杀链路等结论已被后续重构取代）
+- `后端功能与实现思路.md` — 按服务逐条的接口清单与实现思路（覆盖到 10-17，此后新增的社区、文件服务、首页 Banner 未收录）
+- `数据库设计与功能实现说明.md` — 表结构设计取舍与演进决策记录（库表清单以 `sql/` 为准）
