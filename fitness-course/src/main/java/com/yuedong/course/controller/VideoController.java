@@ -3,6 +3,7 @@ package com.yuedong.course.controller;
 import com.yuedong.common.result.Result;
 import com.yuedong.common.util.UserContext;
 import com.yuedong.course.model.dto.VideoProgressDTO;
+import com.yuedong.course.model.vo.VideoProgressVO;
 import com.yuedong.course.model.vo.VideoVO;
 import com.yuedong.course.service.VideoService;
 import jakarta.validation.Valid;
@@ -44,7 +45,7 @@ public class VideoController {
      * @return finished=是否完课；points=本次发放的积分（未触发完课为 null）
      */
     @PostMapping("/progress")
-    public Result<VideoService.VideoProgressResult> progress(@Valid @RequestBody VideoProgressDTO dto) {
+    public Result<VideoProgressVO> progress(@Valid @RequestBody VideoProgressDTO dto) {
         return Result.ok(videoService.reportProgress(UserContext.getUserId(), dto));
     }
 }

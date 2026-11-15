@@ -6,6 +6,8 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
+import java.time.LocalDateTime;
+
 /**
  * 秒杀活动表 Mapper。
  */
@@ -45,13 +47,13 @@ public interface SeckillActivityMapper extends BaseMapper<SeckillActivity> {
             "WHERE course_id = #{courseId} AND status IN (0, 1) " +
             "  AND start_time < #{endTime} AND end_time > #{startTime}")
     int countOverlapping(@Param("courseId") Long courseId,
-                         @Param("startTime") java.time.LocalDateTime startTime,
-                         @Param("endTime") java.time.LocalDateTime endTime);
+                         @Param("startTime") LocalDateTime startTime,
+                         @Param("endTime") LocalDateTime endTime);
 
     /**
      * 发放（待开始 → 进行中），CAS 版本。
      *
-     * <p>★为什么必须带 {@code AND status = 0}：{@code @Scheduled} 在多实例部署下每台机器都会跑，
+     * <p>★为什么必须带 {@code AND status = 0}：定时任务在多实例部署下每台机器都会跑，
      * 单实例里也可能上一轮还没跑完下一轮又起来。用 {@code updateById} 会把状态无脑写成 1，
      * 于是"发放"这个动作被执行 N 次；带上 status 条件后，第二个执行者影响行数为 0，
      * 天然知道自己该跳过——<b>不需要引入 ShedLock 或分布式锁</b>。
@@ -66,7 +68,7 @@ public interface SeckillActivityMapper extends BaseMapper<SeckillActivity> {
      */
     @Update("UPDATE t_seckill_activity SET status = 1, preheat_at = #{now} " +
             "WHERE id = #{activityId} AND status = 0")
-    int markRunning(@Param("activityId") Long activityId, @Param("now") java.time.LocalDateTime now);
+    int markRunning(@Param("activityId") Long activityId, @Param("now") LocalDateTime now);
 
     /**
      * 结束（进行中 → 已结束），同样是 CAS。

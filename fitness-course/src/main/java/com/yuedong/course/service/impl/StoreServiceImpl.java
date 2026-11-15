@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.yuedong.common.constant.RedisKeyConstants;
 import com.yuedong.common.exception.BusinessException;
 import com.yuedong.common.result.ErrorCode;
+import com.yuedong.common.result.Result;
 import com.yuedong.course.api.dto.StoreDTO;
 import com.yuedong.course.api.dto.StoreSaveDTO;
 import com.yuedong.course.mapper.CoachMapper;
@@ -14,6 +15,8 @@ import com.yuedong.course.model.entity.CourseStore;
 import com.yuedong.course.model.entity.Store;
 import com.yuedong.course.model.vo.StoreVO;
 import com.yuedong.course.service.StoreService;
+import com.yuedong.order.api.client.RatingClient;
+import com.yuedong.order.api.dto.RatingStatsDTO;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.ApplicationArguments;
@@ -82,7 +85,7 @@ public class StoreServiceImpl implements StoreService, ApplicationRunner {
     private final CourseStoreMapper courseStoreMapper;
     private final StringRedisTemplate redis;
     /** 门店评分来自 order 域（评价明细与统计都在 yd_order），这里只读 */
-    private final com.yuedong.order.api.client.RatingClient ratingClient;
+    private final RatingClient ratingClient;
 
     /** 应用启动完成后把全部门店写入 Redis GEO（幂等：先删 key 再灌） */
     @Override
@@ -172,13 +175,13 @@ public class StoreServiceImpl implements StoreService, ApplicationRunner {
             }
         }
         try {
-            com.yuedong.common.result.Result<List<com.yuedong.order.api.dto.RatingStatsDTO>> statsResult =
+            Result<List<RatingStatsDTO>> statsResult =
                     ratingClient.stats("STORE", ids);
             if (statsResult.getCode() != 0 || statsResult.getData() == null) {
                 return;
             }
-            Map<Long, com.yuedong.order.api.dto.RatingStatsDTO> statsMap = new HashMap<>();
-            for (com.yuedong.order.api.dto.RatingStatsDTO stat : statsResult.getData()) {
+            Map<Long, RatingStatsDTO> statsMap = new HashMap<>();
+            for (RatingStatsDTO stat : statsResult.getData()) {
                 statsMap.put(stat.getTargetId(), stat);
             }
             for (StoreVO vo : vos) {

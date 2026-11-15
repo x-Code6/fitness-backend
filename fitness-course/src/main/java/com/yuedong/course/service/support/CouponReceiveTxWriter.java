@@ -1,4 +1,4 @@
-package com.yuedong.course.service;
+package com.yuedong.course.service.support;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.yuedong.common.exception.BusinessException;

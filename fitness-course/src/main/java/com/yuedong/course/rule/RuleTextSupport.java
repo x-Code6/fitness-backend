@@ -1,5 +1,6 @@
 package com.yuedong.course.rule;
 
+import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 
 /**
@@ -81,7 +82,7 @@ final class RuleTextSupport {
     }
 
     /** 日期串，null 给空串而不是 "null" */
-    static String day(java.time.LocalDateTime time) {
+    static String day(LocalDateTime time) {
         return time == null ? "" : time.format(DAY_FMT);
     }
 }

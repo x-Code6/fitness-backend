@@ -1,4 +1,4 @@
-package com.yuedong.course.config;
+package com.yuedong.course.mq;
 
 import com.yuedong.common.constant.MqConstants;
 import org.springframework.amqp.core.TopicExchange;

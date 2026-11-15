@@ -25,7 +25,10 @@ public class CacheRebuildExecutorConfig {
                 2, 4, 60, TimeUnit.SECONDS,
                 new ArrayBlockingQueue<>(64),
                 r -> new Thread(r, "cache-rebuild"),
-                new ThreadPoolExecutor.DiscardPolicy() // 队列满直接丢弃：还有下一个请求会再触发重建
+                // 队列满抛 RejectedExecutionException：由 tryRebuildAsync 捕获、清理本地单飞标记并记日志。
+                // ★不能继续用 DiscardPolicy：任务被静默丢弃时 finally 不会执行，单飞标记会永久卡住，
+                //   这门课在本实例就再也不会触发重建了。
+                new ThreadPoolExecutor.AbortPolicy()
         );
     }
 }

@@ -1,6 +1,7 @@
 package com.yuedong.course.service;
 
 import com.yuedong.course.model.dto.VideoProgressDTO;
+import com.yuedong.course.model.vo.VideoProgressVO;
 import com.yuedong.course.model.vo.VideoVO;
 
 import java.util.List;
@@ -21,9 +22,5 @@ public interface VideoService {
      *
      * @return finished=本次上报后是否完课；points=本次发放的积分（未触发完课为 null）
      */
-    VideoProgressResult reportProgress(Long userId, VideoProgressDTO dto);
-
-    /** 上报结果：是否完课 + 本次发放积分数 */
-    record VideoProgressResult(boolean finished, Integer points) {
-    }
+    VideoProgressVO reportProgress(Long userId, VideoProgressDTO dto);
 }

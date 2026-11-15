@@ -8,6 +8,7 @@ import com.yuedong.common.constant.RedisKeyConstants;
 import com.yuedong.common.exception.BusinessException;
 import com.yuedong.common.model.PageDTO;
 import com.yuedong.common.result.ErrorCode;
+import com.yuedong.common.result.Result;
 import com.yuedong.course.api.dto.AdminCountDTO;
 import com.yuedong.course.api.dto.CourseAdminDTO;
 import com.yuedong.course.api.dto.CourseDTO;
@@ -29,11 +30,15 @@ import com.yuedong.course.model.entity.CourseComment;
 import com.yuedong.course.model.entity.CourseStore;
 import com.yuedong.course.model.entity.SeckillActivity;
 import com.yuedong.course.model.entity.Store;
+import com.yuedong.course.model.vo.CourseDetailContextVO;
 import com.yuedong.course.model.vo.CourseVO;
+import com.yuedong.course.mapper.CoachCourseMapper;
 import com.yuedong.course.rule.RuleContext;
 import com.yuedong.course.rule.RuleDescribeFactory;
 import com.yuedong.course.service.BannerService;
 import com.yuedong.course.service.CourseService;
+import com.yuedong.order.api.client.RatingClient;
+import com.yuedong.order.api.dto.RatingStatsDTO;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RLock;
@@ -54,6 +59,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
@@ -67,9 +73,9 @@ import java.util.stream.Collectors;
  *   <li><b>缓存三件套</b>（{@link #getDetail}）：防击穿=逻辑过期 + 互斥锁 + 异步重建，
  *       防穿透=空值缓存，防雪崩=物理 TTL + 随机抖动。
  *       旧实现漏了第三件：{@code writeCache} 用的是不带 TTL 的 set，key 只增不减；</li>
- *   <li><b>门店维度的数据不进缓存</b>：同一门课在 A 店有 3 位教练、在 B 店可能 0 位。
- *       按 {@code (courseId, storeId)} 做键会让键空间随门店数膨胀且大多很冷，
- *       所以缓存只存与门店无关的部分，"几位教练可约"每次走一次索引 COUNT；</li>
+ *   <li><b>两级缓存</b>：基础课程数据缓存 30 分钟；评分、门店列表、教练数、门店规则
+ *       这些允许短期不一致的数据按 {@code (courseId, storeId)} 再缓存 60 秒。
+ *       门店维度键空间会变大，但 60 秒 TTL 会很快回收冷键，热点详情的 DB/Feign 压力明显下降；</li>
  *   <li><b>可售门店来自 {@code t_course_store}</b>：旧库把 store_id/store_name 写死在课程表，
  *       一门课只能一家店。</li>
  * </ol>
@@ -98,6 +104,13 @@ public class CourseServiceImpl implements CourseService {
     /** 空值缓存存活时间：够挡住反复刷不存在的 id，又不至于让新建课程迟迟不可见 */
     private static final Duration EMPTY_TTL = Duration.ofMinutes(2);
 
+    /**
+     * 门店级上下文缓存时长。
+     * <p>★60 秒是“允许短期不一致”的落地：管理端改课程/门店/教练、order 侧新增评价后，
+     * 详情最坏旧 60 秒；换掉的是每次详情 1 次 Feign + 最多 4 次 DB。更新不主动删缓存。</p>
+     */
+    private static final Duration CONTEXT_TTL = Duration.ofSeconds(60);
+
     /** 互斥锁的持有时长（秒）。不带 leaseTime 的话要靠 Redisson 看门狗续期，进程被 kill -9 时释放很慢 */
     private static final long LOCK_LEASE_SECONDS = 10;
 
@@ -110,22 +123,30 @@ public class CourseServiceImpl implements CourseService {
     private final CourseCommentMapper commentMapper;
     private final CoachMapper coachMapper;
     /** 只为"这门课有几位教练会教"这一个聚合，不写教练的任何状态 */
-    private final com.yuedong.course.mapper.CoachCourseMapper coachCourseMapper;
+    private final CoachCourseMapper coachCourseMapper;
     private final StoreMapper storeMapper;
     private final SeckillActivityMapper seckillActivityMapper;
     /** 活动页联动：课程保存/下架/删除时同步 Banner */
     private final BannerService bannerService;
     /** 规则文案工厂（D21 策略模式）。文案只在这一处产出，列表/详情/时段页都从这里取 */
-    private final com.yuedong.course.rule.RuleDescribeFactory ruleDescribeFactory;
+    private final RuleDescribeFactory ruleDescribeFactory;
     /** 评分统计来自 order 域（评价明细与汇总都在 yd_order）。只读，取不到就显示"暂无评分" */
-    private final com.yuedong.order.api.client.RatingClient ratingClient;
+    private final RatingClient ratingClient;
     private final StringRedisTemplate redis;
     private final RedissonClient redisson;
     private final ObjectMapper objectMapper;
 
-    /** 缓存重建线程池（配置见 CacheRebuildExecutorConfig：队列 64 + DiscardPolicy） */
+    /** 缓存重建线程池（配置见 CacheRebuildExecutorConfig：队列 64 + AbortPolicy） */
     @Qualifier("cacheRebuildExecutor")
     private final ExecutorService rebuildExecutor;
+
+    /**
+     * 本实例内正在重建的课程 id。
+     * <p>★用 {@code ConcurrentHashMap.newKeySet()} 做单飞：同门课在本实例最多一个重建任务进池，
+     * 避免热点课程在逻辑过期瞬间把队列塞满、把其它课程的重建任务挤掉。
+     * 跨实例仍由异步任务里的 Redisson 锁兜底。</p>
+     */
+    private final Set<Long> rebuildingCourses = ConcurrentHashMap.newKeySet();
 
     // =====================================================================
     // 课程列表：不缓存（筛选组合多、命中率低），只修搜索条件 + 补门店数统计
@@ -238,8 +259,10 @@ public class CourseServiceImpl implements CourseService {
     /**
      * 逻辑过期后尝试触发异步重建：用互斥锁保证同一课程只有一个线程去重建。
      *
-     * <p>三个细节都写在代码里：</p>
+     * <p>四个细节都写在代码里：</p>
      * <ul>
+     *   <li>本实例用 {@link #rebuildingCourses} 单飞：同一门课最多一个任务进池，
+     *       热点课程不会在逻辑过期瞬间把队列塞满；</li>
      *   <li>锁用<b>独立 key</b>（{@code course:lock:detail:}）而不是复用数据 key——旧实现拿数据 key 加锁，
      *       锁自身的内部结构与缓存 JSON 挤在同一个键上；</li>
      *   <li>{@code tryLock(0, ...)}：等 0 秒，抢不到立刻走人（去返回旧数据），
@@ -248,38 +271,48 @@ public class CourseServiceImpl implements CourseService {
      * </ul>
      */
     private void tryRebuildAsync(Long id) {
+        // ★本实例单飞：同一门课最多一个重建任务；跨实例仍由 Redisson 锁兜底
+        if (!rebuildingCourses.add(id)) {
+            return;
+        }
         try {
             // ★锁必须在异步任务里“拿到 → 重建完 → 释放”，不能在请求线程里 submit 完就解锁：
             //   提前解锁会让每个逻辑过期请求都再提交一次重建任务，重复打 DB。
             rebuildExecutor.submit(() -> {
-                RLock lock = redisson.getLock(RedisKeyConstants.COURSE_LOCK + id);
-                boolean locked = false;
                 try {
-                    locked = lock.tryLock(0, LOCK_LEASE_SECONDS, TimeUnit.SECONDS);
-                    if (!locked) {
-                        return;
+                    RLock lock = redisson.getLock(RedisKeyConstants.COURSE_LOCK + id);
+                    boolean locked = false;
+                    try {
+                        locked = lock.tryLock(0, LOCK_LEASE_SECONDS, TimeUnit.SECONDS);
+                        if (!locked) {
+                            return;
+                        }
+                        // 双重检查：等锁期间可能已被上一个持锁线程重建完
+                        CacheWrapper<CourseVO> latest = readCache(id);
+                        if (latest != null && latest.getExpireTime() > System.currentTimeMillis()) {
+                            return;
+                        }
+                        rebuildCache(id);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();   // 恢复中断标记，不要吞掉
+                        log.warn("等待课程缓存锁被中断: id={}", id);
+                    } catch (Exception e) {
+                        log.error("课程详情异步重建失败: id={}", id, e);
+                    } finally {
+                        // 只解自己拿到的锁；isHeldByCurrentThread 防止解掉别人的锁
+                        if (locked && lock.isHeldByCurrentThread()) {
+                            lock.unlock();
+                        }
                     }
-                    // 双重检查：等锁期间可能已被上一个持锁线程重建完
-                    CacheWrapper<CourseVO> latest = readCache(id);
-                    if (latest != null && latest.getExpireTime() > System.currentTimeMillis()) {
-                        return;
-                    }
-                    rebuildCache(id);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();   // 恢复中断标记，不要吞掉
-                    log.warn("等待课程缓存锁被中断: id={}", id);
-                } catch (Exception e) {
-                    log.error("课程详情异步重建失败: id={}", id, e);
                 } finally {
-                    // 只解自己拿到的锁；isHeldByCurrentThread 防止解掉别人的锁
-                    if (locked && lock.isHeldByCurrentThread()) {
-                        lock.unlock();
-                    }
+                    // 任务结束（正常/异常/没抢到锁）都释放本实例标记
+                    rebuildingCourses.remove(id);
                 }
             });
             log.info("课程详情逻辑过期，已提交异步重建: id={}", id);
         } catch (Exception e) {
-            // 线程池满/已关闭：不影响主流程，下一次请求还会再触发
+            // 线程池拒绝/已关闭：必须清标记，否则这门课在本实例永久不再重建
+            rebuildingCourses.remove(id);
             log.error("提交课程详情异步重建失败: id={}", id, e);
         }
     }
@@ -327,27 +360,39 @@ public class CourseServiceImpl implements CourseService {
     }
 
     /**
-     * 给缓存取出的 VO 补上门店维度的实时字段（当前只有"几位教练可约"）。
+     * 给缓存取出的 VO 补上门店维度的实时字段。
      *
-     * <p>缓存里的对象是共享的反序列化结果，每次请求都会重新 new 一个，
-     * 所以在这里 set 不会污染缓存内容。</p>
+     * <p>★两级缓存：基础 VO 缓存 30 分钟；这里补的评分/门店列表/教练数/门店规则
+     * 按 {@code courseId + storeId} 再缓存 60 秒。更新不主动删，靠 TTL 收敛。</p>
+     *
+     * <p>缓存里的对象是每次反序列化出来的新对象，apply 不会污染 Redis 里的基础缓存。</p>
      */
     private CourseVO withStoreContext(CourseVO vo, Long storeId) {
         if (vo == null) {
             return vo;
         }
-        // ★评分在缓存之外填：课程详情整体缓存 30 分钟，
-        // 但"4.8 分 / 12 条"是新评价一进来就该变的数，塞进缓存就会出现"评了却看不见"。
-        // 所以缓存里<b>永远不含评分</b>，每次响应前单独取一次（一次批量 RPC，不是每条一次）
+
+        // ===== 第 1 步：先看 60 秒门店上下文缓存 =====
+        CourseDetailContextVO cachedContext = readContextCache(vo.getId(), storeId);
+        if (cachedContext != null) {
+            applyContext(vo, cachedContext);
+            return vo;
+        }
+
+        // ===== 第 2 步：未命中，实时拼装并回写上下文缓存 =====
+        // 评分在 30 分钟基础缓存之外：新评价要尽快可见，放基础缓存会"评了却看不见"
         fillCourseRatings(List.of(vo));
 
-        // ★门店列表也每次现查，不用缓存里那份：管理端随时会改"这门课在哪些店卖"，
-        // 而且前端要靠这个列表默认选中一家在卖的店——列表为空时详情页既选不出门店、
-        // 也查不出教练，症状是"本店暂无可约教练" + 点购买提示"请先在课程页选好门店"。
-        // 放在 storeId 判空之前：不带 storeId 的首次请求同样需要这份列表。
-        vo.setStores(loadStoreOptions(vo.getId()));
+        // ★一次查询拿全门店关系：门店列表、目标门店规则、在售门店数都从同一份结果里取，
+        //   不再额外 selectOne（原来同一请求内 t_course_store 查了两次）
+        StoreContext storeContext = loadStoreContext(vo.getId());
+        vo.setStores(storeContext.options());
+        vo.setStoreCount(storeContext.activeStoreCount());
+        vo.setLatestFreeText(storeContext.activeStoreCount() > 0
+                ? storeContext.activeStoreCount() + " 家门店可约"
+                : "暂无可约门店");
 
-        // ★评论数同理，而且只有展示课需要（可售课的口碑在 ratingText 那格）
+        // 评论数同理，而且只有展示课需要（可售课的口碑在 ratingText 那格）
         if ("CONTENT".equals(vo.getKind())) {
             Long comments = commentMapper.selectCount(new LambdaQueryWrapper<CourseComment>()
                     .eq(CourseComment::getCourseId, vo.getId())
@@ -355,35 +400,94 @@ public class CourseServiceImpl implements CourseService {
             vo.setCommentCount(comments == null ? 0 : comments.intValue());
         }
 
-        if (storeId == null) {
-            return vo;
-        }
-        // 三表同库 JOIN 数教练：命中 t_coach_course.idx_course 与 t_coach.uk_store_name 前缀
-        int coachCount = coachMapper.countByCourseAndStore(vo.getId(), storeId);
-        vo.setCoachCount(coachCount);
-        // 带了门店上下文，这句话就换成该店的教练数（列表那句"N 家门店可约"在这里更具体）
-        vo.setLatestFreeText(coachCount > 0 ? "今天 " + coachCount + " 位教练可约" : "暂无可约时段");
+        if (storeId != null) {
+            // 三表同库 JOIN 数教练：命中 t_coach_course.idx_course 与 t_coach.uk_store_name 前缀
+            int coachCount = coachMapper.countByCourseAndStore(vo.getId(), storeId);
+            vo.setCoachCount(coachCount);
+            vo.setLatestFreeText(coachCount > 0 ? "今天 " + coachCount + " 位教练可约" : "暂无可约时段");
 
-        // ===== 规则文案按这家店重算一遍 =====
-        // ★有效期那一行只有知道是哪家店才说得出来（同一门课在 A 店 30 天、在 B 店长期），
-        // 所以缓存里的通用版本在这里要被带上下文的版本覆盖
-        CourseStore relation = courseStoreMapper.selectOne(new LambdaQueryWrapper<CourseStore>()
-                .eq(CourseStore::getCourseId, vo.getId())
-                .eq(CourseStore::getStoreId, storeId)
-                .eq(CourseStore::getStatus, 1));
-        com.yuedong.course.rule.RuleContext context = com.yuedong.course.rule.RuleContext.builder()
-                .courseKind(vo.getKind())
-                .saleType(vo.getSaleType())
-                .lessonHours(vo.getLessonHours())
-                .timesPerBuy(vo.getTimesPerBuy())
-                .validType(relation == null ? null : relation.getValidType())
-                .validDays(relation == null ? null : relation.getValidDays())
-                .useEndTime(relation == null ? null : relation.getUseEndTime())
-                .build();
-        String scene = ruleDescribeFactory.courseSceneOf(vo.getKind(), vo.getSaleType());
-        vo.setRuleTexts(ruleDescribeFactory.describe(scene, context));
-        vo.setRuleSummary(ruleDescribeFactory.summary(scene, context));
+            // ★复用 loadStoreContext 里已经查出来的关系行，不再 courseStoreMapper.selectOne
+            CourseStore relation = storeContext.relationByStore().get(storeId);
+            RuleContext context = RuleContext.builder()
+                    .courseKind(vo.getKind())
+                    .saleType(vo.getSaleType())
+                    .lessonHours(vo.getLessonHours())
+                    .timesPerBuy(vo.getTimesPerBuy())
+                    .validType(relation == null ? null : relation.getValidType())
+                    .validDays(relation == null ? null : relation.getValidDays())
+                    .useEndTime(relation == null ? null : relation.getUseEndTime())
+                    .build();
+            String scene = ruleDescribeFactory.courseSceneOf(vo.getKind(), vo.getSaleType());
+            vo.setRuleTexts(ruleDescribeFactory.describe(scene, context));
+            vo.setRuleSummary(ruleDescribeFactory.summary(scene, context));
+        }
+
+        writeContextCache(vo.getId(), storeId, extractContext(vo));
         return vo;
+    }
+
+    /**
+     * 门店级上下文缓存（60 秒）。
+     * <p>★更新不主动删，靠 TTL 收敛：管理端改课程/门店/教练、order 侧新增评价后，
+     * 详情最坏旧 60 秒；换掉的是每次详情 1 次 Feign + 最多 4 次 DB。</p>
+     */
+    private CourseDetailContextVO readContextCache(Long courseId, Long storeId) {
+        String key = RedisKeyConstants.courseDetailContext(courseId, storeId);
+        try {
+            String json = redis.opsForValue().get(key);
+            if (json == null || json.isBlank()) {
+                return null;
+            }
+            return objectMapper.readValue(json, CourseDetailContextVO.class);
+        } catch (Exception e) {
+            // 缓存坏了按未命中处理，不能把故障放大成详情 500
+            log.warn("课程详情上下文缓存读取失败，按未命中处理: courseId={}, storeId={}",
+                    courseId, storeId, e);
+            try {
+                redis.delete(key);
+            } catch (Exception ignore) {
+                // 删不掉就等 TTL
+            }
+            return null;
+        }
+    }
+
+    private void writeContextCache(Long courseId, Long storeId, CourseDetailContextVO context) {
+        try {
+            redis.opsForValue().set(RedisKeyConstants.courseDetailContext(courseId, storeId),
+                    objectMapper.writeValueAsString(context), CONTEXT_TTL);
+        } catch (Exception e) {
+            // 写失败不影响本次响应，下一次请求会再回源
+            log.error("课程详情上下文缓存写入失败: courseId={}, storeId={}", courseId, storeId, e);
+        }
+    }
+
+    /** 把 60 秒上下文叠回基础 VO（每次请求反序列化出的新对象，不会污染缓存） */
+    private void applyContext(CourseVO vo, CourseDetailContextVO context) {
+        vo.setRatingText(context.getRatingText());
+        vo.setRatingCount(context.getRatingCount());
+        vo.setStores(context.getStores());
+        vo.setStoreCount(context.getStoreCount());
+        vo.setCommentCount(context.getCommentCount());
+        vo.setCoachCount(context.getCoachCount());
+        vo.setLatestFreeText(context.getLatestFreeText());
+        vo.setRuleTexts(context.getRuleTexts());
+        vo.setRuleSummary(context.getRuleSummary());
+    }
+
+    /** 从刚拼好的 VO 里抽出需要缓存 60 秒的字段 */
+    private CourseDetailContextVO extractContext(CourseVO vo) {
+        return CourseDetailContextVO.builder()
+                .ratingText(vo.getRatingText())
+                .ratingCount(vo.getRatingCount())
+                .stores(vo.getStores())
+                .storeCount(vo.getStoreCount())
+                .commentCount(vo.getCommentCount())
+                .coachCount(vo.getCoachCount())
+                .latestFreeText(vo.getLatestFreeText())
+                .ruleTexts(vo.getRuleTexts())
+                .ruleSummary(vo.getRuleSummary())
+                .build();
     }
 
     // =====================================================================
@@ -1005,19 +1109,21 @@ public class CourseServiceImpl implements CourseService {
     }
 
     /**
-     * 详情页"在哪家店买"的列表。
+     * 详情页门店上下文：一次查询拿全门店关系，同时返回：
+     * <ul>
+     *   <li>门店下拉项（停售门店也返回，用 {@code onSale=false} 标灰）；</li>
+     *   <li>目标门店关系（规则上下文用，只收 {@code status=1}）；</li>
+     *   <li>在售门店数（口径 = {@code status=1} 的关系数，不是 onSale）。</li>
+     * </ul>
      *
-     * <p>★<b>停售的门店也返回</b>，用 {@code onSale=false} 标灰而不是藏起来：
-     * 用户看到"这家店已停售"知道发生了什么，看到列表是空的只会以为课程坏了。</p>
-     *
-     * <p>两次查询拿完：关联表按 courseId 取全部关系，再用主键批量取门店名与营业时间，
-     * 不在循环里 selectById。</p>
+     * <p>★合并详情请求内的重复查询：原来 loadStoreOptions 和 selectOne 在同一个请求里
+     * 对 {@code t_course_store} 查两次，现在一次拿全。</p>
      */
-    private List<CourseVO.StoreOption> loadStoreOptions(Long courseId) {
+    private StoreContext loadStoreContext(Long courseId) {
         List<CourseStore> relations = courseStoreMapper.selectList(
                 new LambdaQueryWrapper<CourseStore>().eq(CourseStore::getCourseId, courseId));
         if (relations.isEmpty()) {
-            return List.of();
+            return new StoreContext(List.of(), Map.of(), 0);
         }
         Set<Long> storeIds = relations.stream()
                 .map(CourseStore::getStoreId)
@@ -1029,6 +1135,8 @@ public class CourseServiceImpl implements CourseService {
 
         LocalDateTime now = LocalDateTime.now();
         List<CourseVO.StoreOption> options = new ArrayList<>(relations.size());
+        Map<Long, CourseStore> relationByStore = new HashMap<>();
+        int activeStoreCount = 0;
         for (CourseStore relation : relations) {
             Store store = stores.get(relation.getStoreId());
             // 门店不存在或 status=0 都不可售；关系行保留是为了让用户看到“这家店已关闭”而不是整行消失
@@ -1039,11 +1147,24 @@ public class CourseServiceImpl implements CourseService {
                     .onSale(storeOpen && sellableNow(relation, now))
                     .openHoursText(store == null ? null : store.getOpenHoursText())
                     .build());
+            // storeCount 口径：status=1 的关系数；onSale 还受售卖时间窗影响，不能混用
+            if (Integer.valueOf(1).equals(relation.getStatus())) {
+                activeStoreCount++;
+                if (relation.getStoreId() != null) {
+                    relationByStore.putIfAbsent(relation.getStoreId(), relation);
+                }
+            }
         }
         // 在卖的排前面，同组按门店 id 稳定排序（否则每次刷新顺序会跳）
         options.sort(Comparator.comparing((CourseVO.StoreOption o) -> !Boolean.TRUE.equals(o.getOnSale()))
                 .thenComparing(CourseVO.StoreOption::getStoreId));
-        return options;
+        return new StoreContext(options, relationByStore, activeStoreCount);
+    }
+
+    /** loadStoreContext 的返回值：门店下拉项 + 目标门店关系 + 在售门店数 */
+    private record StoreContext(List<CourseVO.StoreOption> options,
+                                Map<Long, CourseStore> relationByStore,
+                                int activeStoreCount) {
     }
 
     /** 一次取回这些课程的可售门店数（★绝不在循环里查库） */
@@ -1211,8 +1332,8 @@ public class CourseServiceImpl implements CourseService {
      *
      * @param relation 课程在该门店的关系行，列表页没有门店上下文时传 null
      */
-    private com.yuedong.course.rule.RuleContext buildRuleContext(Course course, CourseStore relation) {
-        return com.yuedong.course.rule.RuleContext.builder()
+    private RuleContext buildRuleContext(Course course, CourseStore relation) {
+        return RuleContext.builder()
                 .courseKind(course.getCourseKind())
                 .saleType(course.getSaleType())
                 .lessonHours(course.getLessonHours())
@@ -1244,17 +1365,17 @@ public class CourseServiceImpl implements CourseService {
             }
         }
         try {
-            com.yuedong.common.result.Result<List<com.yuedong.order.api.dto.RatingStatsDTO>> result =
+            Result<List<RatingStatsDTO>> result =
                     ratingClient.stats("COURSE", ids);
             if (result.getCode() != 0 || result.getData() == null) {
                 return;
             }
-            Map<Long, com.yuedong.order.api.dto.RatingStatsDTO> statsMap = new HashMap<>();
-            for (com.yuedong.order.api.dto.RatingStatsDTO stat : result.getData()) {
+            Map<Long, RatingStatsDTO> statsMap = new HashMap<>();
+            for (RatingStatsDTO stat : result.getData()) {
                 statsMap.put(stat.getTargetId(), stat);
             }
             for (CourseVO vo : vos) {
-                com.yuedong.order.api.dto.RatingStatsDTO stat = statsMap.get(vo.getId());
+                RatingStatsDTO stat = statsMap.get(vo.getId());
                 if (stat != null) {
                     vo.setRatingText(stat.getAvgText());
                     vo.setRatingCount(stat.getRatingCount());

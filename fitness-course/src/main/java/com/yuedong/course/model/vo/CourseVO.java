@@ -119,8 +119,9 @@ public class CourseVO {
      * <p>★可售课这一格是 null 而不是 0：两类课的"用户说的话"是两个东西
      * （评论 vs 评价），给可售课显示"0 条评论"会让人以为这门课没人说话，
      * 而它的真实口碑在 {@code ratingText} 那一格里。</p>
-     * <p>★和 ratingText 一样<b>在缓存之外填</b>（见 CourseServiceImpl#withStoreContext）：
-     * 详情整体缓存 30 分钟，评论数是"发一条就该 +1"的数，进缓存就变成"发了却看不见"。</p>
+     * <p>★和 ratingText 一样<b>不进 30 分钟的基础缓存</b>（见 CourseServiceImpl#withStoreContext）：
+     * 评论数是"发一条就该 +1"的数，进基础缓存就会"发了却看不见"；
+     * 现在放在 60 秒门店上下文缓存里，最坏旧 60 秒。</p>
      */
     private Integer commentCount;
 
@@ -149,9 +150,10 @@ public class CourseVO {
     /**
      * 门店下拉项（详情页"在哪家店买"）。
      *
-     * <p>★这个列表由 {@code CourseServiceImpl#withStoreContext} 每次请求现查填充，
-     * <b>不进 30 分钟的课程详情缓存</b>——门店配课是管理端随时会改的，
-     * 缓存里那份会让用户看到"已停售的店还能选"。</p>
+     * <p>★这个列表由 {@code CourseServiceImpl#withStoreContext} 填充：
+     * <b>不进 30 分钟的基础缓存</b>，而是进 60 秒门店上下文缓存。
+     * 门店配课是管理端随时会改的，60 秒 TTL 是最坏旧值窗口；
+     * 不进基础缓存是为了避免"已停售的店还能选 30 分钟"。</p>
      */
     @Data
     @Builder

@@ -11,12 +11,14 @@ import com.yuedong.course.model.dto.VideoProgressDTO;
 import com.yuedong.course.model.entity.Coach;
 import com.yuedong.course.model.entity.Video;
 import com.yuedong.course.model.entity.VideoProgress;
+import com.yuedong.course.model.vo.VideoProgressVO;
 import com.yuedong.course.model.vo.VideoVO;
 import com.yuedong.course.service.VideoService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.List;
@@ -106,7 +108,7 @@ public class VideoServiceImpl implements VideoService {
     }
 
     @Override
-    public VideoProgressResult reportProgress(Long userId, VideoProgressDTO dto) {
+    public VideoProgressVO reportProgress(Long userId, VideoProgressDTO dto) {
         // ===== 第 1 步：视频存在性校验 =====
         Video video = videoMapper.selectById(dto.getVideoId());
         if (video == null) {
@@ -134,7 +136,7 @@ public class VideoServiceImpl implements VideoService {
         } else {
             LocalDateTime startAt = record.getFirstReportAt() == null
                     ? record.getLastReportAt() : record.getFirstReportAt();
-            long elapsedSeconds = startAt == null ? 0 : java.time.Duration.between(startAt, now).toSeconds();
+            long elapsedSeconds = startAt == null ? 0 : Duration.between(startAt, now).toSeconds();
             if (videoMinutes > 0) {
                 // 正常观看 N 分钟最多推进 100%；1.5 倍容差 + 15 个百分点给暂停/快进/退出重报
                 int maxByDuration = (int) (elapsedSeconds * 100.0 / (videoMinutes * 60L) * 1.5) + 15;
@@ -202,7 +204,7 @@ public class VideoServiceImpl implements VideoService {
                         userId, video.getId());
             }
         }
-        return new VideoProgressResult(finishedNow || alreadyFinished, points);
+        return new VideoProgressVO(finishedNow || alreadyFinished, points);
     }
 
     private VideoVO toVO(Video v, Integer progress, String coachName) {

@@ -1,10 +1,13 @@
 package com.yuedong.course.service.impl;
 
 import com.yuedong.common.constant.RedisKeyConstants;
+import com.yuedong.common.exception.BusinessException;
+import com.yuedong.common.result.ErrorCode;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.yuedong.course.api.dto.SeckillAdminDTO;
 import com.yuedong.course.api.dto.SeckillActiveDTO;
 import com.yuedong.course.api.dto.SeckillSaveDTO;
+import com.yuedong.course.cache.CourseDetailCacheEvictor;
 import com.yuedong.course.mapper.CourseMapper;
 import com.yuedong.course.mapper.SeckillActivityMapper;
 import com.yuedong.course.mapper.StoreMapper;
@@ -18,13 +21,13 @@ import com.yuedong.course.service.SeckillActivityService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -60,6 +63,8 @@ public class SeckillActivityServiceImpl implements SeckillActivityService {
     private final CourseService courseService;
     /** 秒杀活动保存/结束时同步首页轮播，避免活动下架后 banner 还挂着死链接 */
     private final BannerService bannerService;
+    /** 活动状态变化后让课程详情缓存失效 */
+    private final CourseDetailCacheEvictor courseDetailCacheEvictor;
 
 
     /** 进行中的秒杀课程列表（前端秒杀页 / 首页横幅） */
@@ -146,7 +151,7 @@ public class SeckillActivityServiceImpl implements SeckillActivityService {
                 .storeId(a.getStoreId())
                 .seckillPrice(a.getSeckillPrice())
                 .endTime(a.getEndTime() == null ? null
-                        : a.getEndTime().atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli())
+                        : a.getEndTime().atZone(ZoneId.systemDefault()).toInstant().toEpochMilli())
                 .build();
     }
 
@@ -212,8 +217,8 @@ public class SeckillActivityServiceImpl implements SeckillActivityService {
         // 时间格式是字符串入参（管理端表单就是这个格式），解析失败要给的是"哪一行填错了"，
         // 而不是让 DateTimeParseException 冒出来变成 500
         if (start == null || end == null || !end.isAfter(start)) {
-            throw new com.yuedong.common.exception.BusinessException(
-                    com.yuedong.common.result.ErrorCode.PARAM_ERROR, "结束时间必须晚于开始时间");
+            throw new BusinessException(
+                    ErrorCode.PARAM_ERROR, "结束时间必须晚于开始时间");
         }
 
         // 同一课程的"待开始/进行中"活动时间不能重叠。
@@ -221,8 +226,8 @@ public class SeckillActivityServiceImpl implements SeckillActivityService {
         // 到点后两条都变进行中，activeSeckill 就会拿到多条。
         int overlapping = activityMapper.countOverlapping(dto.getCourseId(), start, end);
         if (overlapping > 0) {
-            throw new com.yuedong.common.exception.BusinessException(
-                    com.yuedong.common.result.ErrorCode.PARAM_ERROR,
+            throw new BusinessException(
+                    ErrorCode.PARAM_ERROR,
                     "该课程在这段时间已有秒杀活动（待开始或进行中）");
         }
 
@@ -252,7 +257,7 @@ public class SeckillActivityServiceImpl implements SeckillActivityService {
         }
         try {
             return LocalDateTime.parse(text.trim().replace(' ', 'T'));
-        } catch (java.time.format.DateTimeParseException e) {
+        } catch (DateTimeParseException e) {
             log.warn("秒杀时间格式不正确: {}", text);
             return null;
         }
@@ -262,8 +267,8 @@ public class SeckillActivityServiceImpl implements SeckillActivityService {
     public void adminEnd(Long activityId) {
         SeckillActivity a = activityMapper.selectById(activityId);
         if (a == null) {
-            throw new com.yuedong.common.exception.BusinessException(
-                    com.yuedong.common.result.ErrorCode.PARAM_ERROR, "活动不存在");
+            throw new BusinessException(
+                    ErrorCode.PARAM_ERROR, "活动不存在");
         }
         a.setStatus(2);
         a.setEndTime(LocalDateTime.now()); // 提前结束：截止时间改为现在
@@ -271,20 +276,8 @@ public class SeckillActivityServiceImpl implements SeckillActivityService {
         // 活动提前结束，首页对应海报同步下架（来源下架后 banner 不能留死链接）
         bannerService.disableBySeckill(activityId);
         // 详情缓存里带秒杀按钮/价格，活动状态变了必须让它失效
-        evictCourseDetail(a.getCourseId());
+        courseDetailCacheEvictor.evict(a.getCourseId());
         log.info("管理端提前结束秒杀活动: id={}", activityId);
-    }
-
-    /** 删课程详情缓存；失败只记日志，等 30 分钟自然过期 */
-    private void evictCourseDetail(Long courseId) {
-        if (courseId == null) {
-            return;
-        }
-        try {
-            redis.delete(RedisKeyConstants.courseDetail(courseId));
-        } catch (Exception e) {
-            log.error("秒杀状态已变，但课程详情缓存删除失败，等待过期: courseId={}", courseId, e);
-        }
     }
 
     /**
@@ -310,9 +303,9 @@ public class SeckillActivityServiceImpl implements SeckillActivityService {
         }
 
         // TTL 取"距活动结束还有多久"，活动结束后 Redis 自己回收，不留垃圾 key
-        java.time.Duration ttl = java.time.Duration.between(LocalDateTime.now(), activity.getEndTime());
+        Duration ttl = Duration.between(LocalDateTime.now(), activity.getEndTime());
         if (ttl.isZero() || ttl.isNegative()) {
-            ttl = java.time.Duration.ofMinutes(1);   // 已结束的活动：给个短 TTL，别写个永久 key
+            ttl = Duration.ofMinutes(1);   // 已结束的活动：给个短 TTL，别写个永久 key
         }
 
         int stock = activity.getRemain() == null ? 0 : activity.getRemain();
@@ -334,73 +327,4 @@ public class SeckillActivityServiceImpl implements SeckillActivityService {
         }
     }
 
-    /**
-     * 补偿进行中活动的库存 key。
-     *
-     * <p>★解决什么：Redis 重启/被清后，status=1 的活动不会再次走"到点开始"的预热流程，
-     * 库存 key 不存在时 Lua 会把缺键当作 0，整个活动剩余时间全部提示售罄。
-     * 这里每分钟扫一次进行中的活动，只补不存在的 key；已存在的不覆盖。</p>
-     */
-    @Scheduled(fixedDelay = 60_000)
-    public void repairActiveStock() {
-        List<SeckillActivity> active = activityMapper.selectList(
-                new LambdaQueryWrapper<SeckillActivity>()
-                        .eq(SeckillActivity::getStatus, 1));
-        for (SeckillActivity activity : active) {
-            preheat(activity.getId());
-        }
-    }
-
-    /**
-     * 每 30 秒扫描一次活动表：到点开始（先预热再翻状态）→ 进行中；到点结束 → 已结束。
-     *
-     * <p>★三个设计点，都是以前缺失的：</p>
-     * <ol>
-     *   <li><b>先预热、后翻状态</b>。反过来会出现一个空窗：状态已经是"进行中"、
-     *       但 Redis 里还没有库存，此时用户来抢就是"活动已开始却提示已抢完"。</li>
-     *   <li><b>翻状态用 CAS（{@code WHERE status = 0}）而不是 updateById</b>。
-     *       {@code @Scheduled} 在多实例部署下每台都会跑一遍，没有 CAS 就是两实例同时发放，
-     *       而"重复发放"这件事在有余量扣减时是会真出问题的。CAS 返回 0 行就说明
-     *       这个活动已经被处理过，直接跳过——<b>不需要引分布式锁</b>，
-     *       这也是本项目"并发防御三档"里必须防这一档的最省事解法。</li>
-     *   <li>查询条件是 {@code start_time <= now}，所以"开始时间已经过了但没发放"的活动
-     *       （配晚了、服务当时没起来）会被<b>下一轮扫描直接补发</b>，不会永久卡在待开始。
-     *       这正是讨论里担心的"错过时点"问题的兜底：偏差不影响正确性，只影响几秒体验。</li>
-     * </ol>
-     */
-    @Scheduled(fixedDelay = 30_000)
-    public void scanAndSwitch() {
-        LocalDateTime now = LocalDateTime.now();
-
-        // ===== 到点（或已过点）的开始：先预热库存，再 CAS 翻状态 =====
-        List<SeckillActivity> toStart = activityMapper.selectList(
-                new LambdaQueryWrapper<SeckillActivity>()
-                        .eq(SeckillActivity::getStatus, 0)
-                        .le(SeckillActivity::getStartTime, now));
-        for (SeckillActivity activity : toStart) {
-            if (!preheat(activity.getId())) {
-                continue;
-            }
-            // 只有把状态从 0 改成 1 的那一次才算"发放成功"
-            if (activityMapper.markRunning(activity.getId(), now) > 0) {
-                // 详情缓存里可能还没有秒杀入口/秒杀价，开始时要让它重新组装
-                evictCourseDetail(activity.getCourseId());
-                log.info("秒杀活动已发放: id={}, courseId={}, 原定开始时间={}",
-                        activity.getId(), activity.getCourseId(), activity.getStartTime());
-            }
-        }
-
-        // ===== 到点结束：CAS 翻状态。Redis key 留给 TTL 自然过期 =====
-        List<SeckillActivity> toEnd = activityMapper.selectList(
-                new LambdaQueryWrapper<SeckillActivity>()
-                        .eq(SeckillActivity::getStatus, 1)
-                        .le(SeckillActivity::getEndTime, now));
-        for (SeckillActivity activity : toEnd) {
-            if (activityMapper.markEnded(activity.getId()) > 0) {
-                // 结束后详情页不能再显示秒杀价/抢购按钮
-                evictCourseDetail(activity.getCourseId());
-                log.info("秒杀活动已结束: id={}", activity.getId());
-            }
-        }
-    }
 }

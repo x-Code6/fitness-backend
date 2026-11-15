@@ -1,6 +1,7 @@
 package com.yuedong.course.controller.inner;
 
 import com.yuedong.common.model.PageDTO;
+import com.yuedong.common.result.ErrorCode;
 import com.yuedong.common.result.Result;
 import com.yuedong.course.api.dto.CoachAdminDTO;
 import com.yuedong.course.api.dto.CoachDTO;
@@ -116,7 +117,7 @@ public class InnerCoachController {
     @PostMapping("/assign-course")
     public Result<Void> assignCourse(@RequestParam Long coachId, @RequestBody List<Long> courseIds) {
         if (courseIds == null) {
-            return Result.fail(com.yuedong.common.result.ErrorCode.PARAM_ERROR, "courseIds 不能为 null，清空请传空数组");
+            return Result.fail(ErrorCode.PARAM_ERROR, "courseIds 不能为 null，清空请传空数组");
         }
         coachService.assignCourses(coachId, courseIds);
         return Result.ok();

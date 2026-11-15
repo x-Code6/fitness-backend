@@ -1,6 +1,7 @@
 package com.yuedong.course.controller.inner;
 
 import com.yuedong.common.model.PageDTO;
+import com.yuedong.common.result.ErrorCode;
 import com.yuedong.common.result.Result;
 import com.yuedong.course.api.dto.AdminCountDTO;
 import com.yuedong.course.api.dto.CourseAdminDTO;
@@ -141,7 +142,7 @@ public class InnerCourseController {
     @PostMapping("/admin/assign-store")
     public Result<Void> adminAssignStore(@RequestParam Long courseId, @RequestBody List<Long> storeIds) {
         if (storeIds == null) {
-            return Result.fail(com.yuedong.common.result.ErrorCode.PARAM_ERROR,
+            return Result.fail(ErrorCode.PARAM_ERROR,
                     "storeIds 不能为 null，清空请传空数组");
         }
         courseService.adminAssignStores(courseId, storeIds);
