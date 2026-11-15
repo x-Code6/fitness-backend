@@ -39,7 +39,7 @@ echo "== 灌 Redis 演示数据（月份键 $YM）=="
 #    否则"我的积分"和榜上数字对不上，看起来像算错了。
 #    10001 = 320（种子余额）；10002 种子表里没有它的行，
 #    要让它也在榜且两边一致，先补一句 MySQL：
-#      docker exec -i mysql mysql -uroot -p123456 -e \
+#      docker exec -i mysql mysql -uroot -p -e \    # 口令按提示输入 .env 里的 DB_PASS
 #        "INSERT INTO yd_point.t_member_points(user_id,balance,total_checkin,continuous_days)
 #         VALUES(10002,210,5,2) ON DUPLICATE KEY UPDATE balance=210;"
 # ---------------------------------------------------------------------------

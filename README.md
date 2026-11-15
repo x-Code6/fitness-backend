@@ -1,19 +1,11 @@
-# 悦动健身 · 后端
+# 悦动健身 · 后端（fitness-backend）
 
 「悦动健身 —— 课程预约与运动社区平台」的微服务后端，覆盖课程购买、教练预约、限时秒杀、优惠券、运动社区、积分打卡、身体数据、行为埋点与运营管理后台。
-
-## 项目简介
-
-面向健身房业务的线上预约与社区平台，用户端是移动端 H5、运营端是 Web 管理后台，两者都只通过网关的 `/api/**` 访问本仓库提供的服务。业务链路按「买课 → 获得凭证 → 约教练 → 上课 → 评价」串起来，另有点赞/评论/关注构成的运动社区、打卡积分与排行榜、行为埋点反哺首页推荐。
-
-后端拆成 9 个可独立启动的业务服务 + 1 个公共模块 + 4 个 Feign 契约模块，每个服务独占一个 MySQL 库，跨服务协作只走 OpenFeign 同步调用或消息队列异步事件，不做跨库 JOIN。
 
 - **170 个接口**：对外 78（24 个 Controller）· 管理端 39（14 个）· 服务间 53（11 个 `/inner/**`）
 - **8 个 MySQL 业务库 · 39 张表**，另有 MongoDB 存储每日身体记录
 - **24 个 Redis Key**：缓存、登录令牌白名单、打卡位图、排行榜 ZSet、门店 GEO、幂等锁
 - **5 个定时任务 · 5 个消息消费者**，RabbitMQ 与 Kafka 双消息队列按场景分工
-
-> 本仓库只含后端服务、建表脚本与中间件编排；用户端 H5 与管理端前端是独立仓库，架构图中作为上游调用方出现。
 
 ## 技术栈
 
@@ -31,7 +23,7 @@
 ## 总体架构
 
 ```text
- 用户端 H5（前端仓库）           管理端（前端仓库）
+ 用户端 H5（fitness-web）        管理端（fitness-admin）
          └──────────────┬──────────────┘
                         ▼  /api/**
                  Nginx（反向代理 + 静态托管）
@@ -82,9 +74,9 @@
 
 - **缓存三件套**（课程详情）：
   - 防雪崩：物理 TTL = 逻辑过期 × 2 + 随机抖动；
-  - 防击穿：逻辑过期 + Redisson 互斥锁 + 线程池异步重建，重建期间返回旧值；
+  - 防击穿：逻辑过期 + 本实例单飞（ConcurrentHashMap 按课程 id 去重）+ Redisson 锁 + 线程池异步重建，重建期间返回旧值；
   - 防穿透：查空结果写空值缓存（TTL 2 分钟）。
-- **实时数不进缓存**：评分、评论数这类「新请求就该变的数」不写入缓存对象，每次响应前单独查询，避免「评了却看不见」。
+- **两级缓存**：基础课程数据缓存 30 分钟；评分、评论数、门店列表、教练数、门店规则按 `courseId + storeId` 再缓存 60 秒，更新不主动删、靠 TTL 收敛。命中 60 秒上下文后详情不再每次打 Feign/COUNT，代价是这些字段最坏旧 60 秒。
 - **门店 GEO**：门店坐标写入 Redis GEO（启动时 `ApplicationRunner` 幂等重建 + 门店保存后重载），附近门店 `GEOSEARCH` 按距离升序返回。
 - **规则文案策略模式**：购买规则文案（有效期、限购等）由后端 `rule/` 包 5 个策略产出（可售课按次 / 不限次、展示课、普通券、秒杀券），同一场景重复注册直接启动失败；前端只渲染不下发字典。
 - **跟练视频进度**：进度只增不减（`WHERE progress < 新值`）+ 防刷速率校验（增量超过真实耗时的 1.5 倍拒绝）；完课事件只在 `finished` 由 false 翻 true 的那一次发出，杜绝重复加分。
@@ -100,7 +92,7 @@
 - **一格一行防并发**：`t_coach_busy` 每小时格一行，把「区间重叠判断」变成「主键冲突判断」，并发抢同一时段靠 `uk_coach_start` 唯一索引兜底；占格按开始时间**升序插入**，让并发请求以同一顺序拿锁，把死锁概率降到最低。
 - **取消规则固化在列上**：`cancel_deadline`（提前 1 小时可取消）入库时算好，取消 SQL 直接 `WHERE cancel_deadline > NOW()`，Java 不算时间、不依赖应用与数据库时钟一致。
 - **到点结算**：每分钟扫 `end_time <= NOW() AND status='BOOKED'` 置 FINISHED 并扣减凭证一次——口径是**下课才算消费**，取消的永远进不来，所以「取消不扣次」不需要额外分支。
-- **评价与评分**：门槛为该订单全部凭证不再 ACTIVE（用完或过期）；一单一评（唯一索引）；写侧与订单同库同事务，零分布式事务。三张统计表用 `INSERT ... ON DUPLICATE KEY UPDATE` 增量维护 sum/count；展示用算术平均，排序与优选标签用**贝叶斯分现算不落库**。
+- **评价与评分**：门槛为该订单全部凭证不再 ACTIVE（用完或过期）；一单一评（唯一索引）；写侧与订单同库同事务，零分布式事务。三张统计表用 `INSERT ... ON DUPLICATE KEY UPDATE` 增量维护 sum/count；展示用算术平均，排序与优选标签用**贝叶斯分现算不落库**（参数可调，落库即锁死）。
 
 ### 4. 秒杀（course + order 协作）
 
@@ -147,7 +139,8 @@ GET /seckill/result?seqId  前端每 500ms 轮询：QUEUEING / SUCCESS(订单号
 ```text
 前端 SDK 攒批（满 5 条或 3 秒）→ POST /behavior/report（允许匿名，deviceId 区分）
   → 逐条投 Kafka（topic yd-behavior-event，key=deviceId：同设备进同一分区、按序消费）
-  → 消费者：eventId 三层幂等（SETNX → uk_event 唯一索引 → 异常仅记日志不阻断）
+  → 消费者：eventId 两层防重（Redis SETNX 快路径 → uk_event 唯一索引兜底）
+  → 手动 ack：先落库，成功后才写 Redis 完成标记；失败不写标记并重试，耗尽进 DLT
   → 落 t_behavior_log 明细；course_click 事件额外 ZINCRBY 课程热度榜
   → 首页调 /behavior/hot/courses 取 TopN 按热度重排推荐位
 ```
@@ -202,7 +195,7 @@ GET /seckill/result?seqId  前端每 500ms 轮询：QUEUEING / SUCCESS(订单号
 | SeckillCreateConsumer | RabbitMQ | 秒杀异步建单 + DB 扣份数 | 幂等键 + 状态判断；失败回补 Redis |
 | CourseFinishedConsumer | RabbitMQ | 完课 +30 积分 | 业务键 `userId:videoId` 两层幂等 |
 | NotifyEventConsumer | RabbitMQ | 事件 → 站内消息（topic 交换机按 notify.* 分发） | 通知重复一次不影响业务 |
-| BehaviorEventConsumer | Kafka | 埋点落明细 + 热度榜 ZINCRBY | eventId SETNX + `uk_event` 唯一索引 |
+| BehaviorEventConsumer | Kafka | 埋点落明细 + 热度榜 ZINCRBY | eventId SETNX 快路径 + `uk_event` 唯一索引兜底；手动 ack，失败重试后进 DLT |
 
 ## 数据库设计
 
@@ -223,11 +216,12 @@ GET /seckill/result?seqId  前端每 500ms 轮询：QUEUEING / SUCCESS(订单号
 - 建表脚本在 `sql/01~08_yd_*.sql`（MySQL 按文件名序自动导入），增量变更在 `sql/upgrade/`。
 - 索引要点：同人同课 / 一人一单 / 一天一打卡全部靠唯一索引兜底；订单按 `(user_id, status)`、`(course_id, user_id, status)` 建索引。
 
+> 运行所需的中间件地址、账号与密钥全部由环境变量注入，仓库内不含任何默认值：把根目录的 `.env.example` 复制成 `.env` 并填写即可，`.env` 已被 `.gitignore` 排除。
 
 ## 目录结构
 
 ```text
-.
+fitness-backend/
 ├── fitness-common/          统一响应 / 错误码 / 全局异常 / JWT / UserContext / @Idempotent
 ├── fitness-gateway/         网关：路由 + JWT/jti 校验 + 用户上下文透传
 ├── fitness-user-api/ …      服务间 Feign 契约 ×4（接口 + DTO）
@@ -240,8 +234,13 @@ GET /seckill/result?seqId  前端每 500ms 轮询：QUEUEING / SUCCESS(订单号
 ├── fitness-admin-server/    管理端 BFF：RBAC / 操作日志 / 跨服务聚合
 ├── fitness-file/            文件：图片上传四道校验 + 静态读取
 ├── sql/                     建表脚本（01~08）与 upgrade 增量
-├── docker/                  docker-compose（中间件 + Nginx）、.env 模板、联调种子脚本
-├── docs/                    架构设计与数据库设计文档
-└── pom.xml                  父 POM：依赖仲裁与插件配置
+└── docker/                  docker-compose（中间件 + Nginx）与配置
 ```
 
+## 相关文档
+
+更深入的设计推导与逐条实现思路见仓库 `docs/`：
+
+- `后端架构设计.md` — 服务拆分与 MQ 分工的推导
+- `后端功能与实现思路.md` — 170 个接口逐服务的实现思路与检查清单
+- `数据库设计与功能实现说明.md` — 表结构设计取舍与演进决策记录

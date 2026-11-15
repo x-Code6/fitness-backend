@@ -3,35 +3,41 @@ server:
   port: 8101
 
 spring:
+  # 环境相关配置（地址 / 账号 / 口令 / 密钥）一律由环境变量注入，本文件不留任何默认值。
+  # 取值清单与说明见项目根目录 .env.example；本地开发把 .env.example 复制成 .env 即可。
+  # 两种启动方式都能读到：IDEA 里工作目录是模块根目录（走 ../.env），
+  # 在项目根目录跑 fat-jar 时走 ./.env。
+  config:
+    import: optional:file:../.env[.properties],optional:file:.env[.properties]
   application:
     name: fitness-user
   rabbitmq:
-    host: ${MQ_HOST:192.168.150.105}
-    port: ${MQ_PORT:5672}
-    username: ${MQ_USER:fitness}
-    password: ${MQ_PASS:fitness123}
+    host: ${MQ_HOST}
+    port: ${MQ_PORT}
+    username: ${MQ_USER}
+    password: ${MQ_PASS}
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
-    # 默认值指向测试 VM；整套上 VM 后用环境变量覆盖（DB_HOST/DB_PASS 等），不必回改本文件
-    url: jdbc:mysql://${DB_HOST:192.168.150.105}:${DB_PORT:3306}/yd_user?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
-    username: ${DB_USER:root}
-    password: ${DB_PASS:123456}
+    # 连接串由环境变量拼装（DB_HOST / DB_PORT / DB_USER / DB_PASS），本文件不含地址与凭证
+    url: jdbc:mysql://${DB_HOST}:${DB_PORT}/yd_user?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: ${DB_USER}
+    password: ${DB_PASS}
   # Redis：登录令牌白名单（login:token:{jti} / login:user:{userId}）。
   # 签发方在这里，校验方在网关，两边连的是同一个 Redis，key 格式统一由
   # fitness-common 的 RedisKeyConstants 提供，不要在任一边自己拼字符串。
   data:
     redis:
-      host: ${REDIS_HOST:192.168.150.105}
-      port: ${REDIS_PORT:6379}
-      password: ${REDIS_PASS:}
+      host: ${REDIS_HOST}
+      port: ${REDIS_PORT}
+      password: ${REDIS_PASS}
       timeout: 2000ms
     # MongoDB：只存"每日身体记录"（body_record 集合）。
     # ★分开写 host/port/database 而不是拼一条 uri：和上面 Redis 的写法保持一致，
     #   换环境时只用改同名环境变量（MONGO_HOST），不用去动一串 URI 字符串。
     mongodb:
-      host: ${MONGO_HOST:192.168.150.105}
-      port: ${MONGO_PORT:27017}
-      database: ${MONGO_DB:yd_profile}
+      host: ${MONGO_HOST}
+      port: ${MONGO_PORT}
+      database: ${MONGO_DB}
       # ★这个键是坑：Spring Data MongoDB 默认<b>不会</b>根据实体上的 @Indexed /
       #   @CompoundIndex 注解去建索引，注解写了也等于没写，唯一约束不生效。
       #   打开它之后，应用启动时会把实体上的索引声明同步到集合上（幂等，已存在就跳过）。
@@ -42,7 +48,7 @@ spring:
   cloud:
     nacos:
       discovery:
-        server-addr: ${NACOS_ADDR:192.168.150.105:8848}
+        server-addr: ${NACOS_ADDR}
 
 mybatis-plus:
   configuration:
@@ -55,7 +61,7 @@ mybatis-plus:
 
 # 与网关一致的 JWT 配置
 jwt:
-  secret: ${JWT_SECRET:yuedong-fitness-jwt-secret-2026-please-change-me-32bytes}
+  secret: ${JWT_SECRET}
   expire-minutes: 43200       # 30 天
 
 logging:

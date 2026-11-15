@@ -10,13 +10,19 @@ server:
   port: 8080
 
 spring:
+  # 环境相关配置（地址 / 账号 / 口令 / 密钥）一律由环境变量注入，本文件不留任何默认值。
+  # 取值清单与说明见项目根目录 .env.example；本地开发把 .env.example 复制成 .env 即可。
+  # 两种启动方式都能读到：IDEA 里工作目录是模块根目录（走 ../.env），
+  # 在项目根目录跑 fat-jar 时走 ./.env。
+  config:
+    import: optional:file:../.env[.properties],optional:file:.env[.properties]
   application:
     name: fitness-gateway
   cloud:
     nacos:
       discovery:
-        # 默认值指向测试 VM；整套上 VM 后用环境变量 NACOS_ADDR 覆盖（值可以是容器名 nacos）
-        server-addr: ${NACOS_ADDR:192.168.150.105:8848}
+        # 由环境变量 NACOS_ADDR 指定；整套上 VM 时可填容器名 nacos
+        server-addr: ${NACOS_ADDR}
     gateway:
       # CORS 统一在网关处理（各服务不再配置，避免重复头）
       # ⚠️ 待办（核查文档 P2-5）：allowedOriginPatterns:"*" + allowCredentials:true
@@ -136,9 +142,9 @@ spring:
   # 否则 Redis 卡住时会把 Netty 事件循环线程拖住——timeout 就是兜这个的。
   data:
     redis:
-      host: ${REDIS_HOST:192.168.150.105}
-      port: ${REDIS_PORT:6379}
-      password: ${REDIS_PASS:}
+      host: ${REDIS_HOST}
+      port: ${REDIS_PORT}
+      password: ${REDIS_PASS}
       timeout: 2000ms
       connect-timeout: 2000ms
 
@@ -221,7 +227,7 @@ auth:
 
 # JWT：与 fitness-user 保持一致（同一个 secret 才能验签通过）
 jwt:
-  secret: ${JWT_SECRET:yuedong-fitness-jwt-secret-2026-please-change-me-32bytes}
+  secret: ${JWT_SECRET}
   expire-minutes: 43200         # 30 天。有白名单后这个值只决定"多久要重新登录一次"
 
 logging:

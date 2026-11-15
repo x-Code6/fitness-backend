@@ -1,26 +1,31 @@
 # 管理端后端服务配置
-# 中间件全在测试 VM（192.168.150.105）上跑，所以下面 ${} 的默认值就是 VM 的地址。
-# ★要换地址就给进程设环境变量（DB_HOST / REDIS_HOST / MQ_HOST / NACOS_ADDR / KAFKA_ADDR），
-#   别改这些默认值 —— 整套服务将来也上 VM 时会被同名变量覆盖，本文件不用回改。
+# 中间件地址、账号、口令与密钥全部由环境变量注入，本文件不留任何默认值。
+# 变量清单见项目根目录 .env.example；本地开发复制成 .env 即可，.env 不入库。
 server:
   port: 8107
 
 spring:
+  # 环境相关配置（地址 / 账号 / 口令 / 密钥）一律由环境变量注入，本文件不留任何默认值。
+  # 取值清单与说明见项目根目录 .env.example；本地开发把 .env.example 复制成 .env 即可。
+  # 两种启动方式都能读到：IDEA 里工作目录是模块根目录（走 ../.env），
+  # 在项目根目录跑 fat-jar 时走 ./.env。
+  config:
+    import: optional:file:../.env[.properties],optional:file:.env[.properties]
   application:
     name: fitness-admin-server
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
-    url: jdbc:mysql://${DB_HOST:192.168.150.105}:${DB_PORT:3306}/yd_admin?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
-    username: ${DB_USER:root}
-    password: ${DB_PASS:123456}
+    url: jdbc:mysql://${DB_HOST}:${DB_PORT}/yd_admin?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: ${DB_USER}
+    password: ${DB_PASS}
   data:
     redis:
-      host: ${REDIS_HOST:192.168.150.105}
-      port: ${REDIS_PORT:6379}
+      host: ${REDIS_HOST}
+      port: ${REDIS_PORT}
   cloud:
     nacos:
       discovery:
-        server-addr: ${NACOS_ADDR:192.168.150.105:8848}
+        server-addr: ${NACOS_ADDR}
   # multipart 上限。图片上传已迁到 fitness-file（那边自己配 2MB/4MB），
   # 这里保留同一组上限，供管理端后续可能新增的表单文件接口复用，
   # 避免容器层落回 Spring 默认值（1MB/10MB）时行为不一致。
@@ -41,7 +46,7 @@ mybatis-plus:
 
 # 管理端 JWT（独立于用户端 secret）
 admin-jwt:
-  secret: ${ADMIN_JWT_SECRET:yuedong-admin-jwt-secret-2026-change-me-32bytes}
+  secret: ${ADMIN_JWT_SECRET}
   expire-minutes: 720        # 12 小时
 
 logging:

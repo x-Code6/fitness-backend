@@ -1,39 +1,44 @@
 # 社区服务配置
-# 中间件全在测试 VM（192.168.150.105）上跑，所以下面 ${} 的默认值就是 VM 的地址。
-# ★要换地址就给进程设环境变量（DB_HOST / REDIS_HOST / MQ_HOST / NACOS_ADDR / KAFKA_ADDR），
-#   别改这些默认值 —— 整套服务将来也上 VM 时会被同名变量覆盖，本文件不用回改。
+# 中间件地址、账号、口令与密钥全部由环境变量注入，本文件不留任何默认值。
+# 变量清单见项目根目录 .env.example；本地开发复制成 .env 即可，.env 不入库。
 server:
   port: 8105
 
 spring:
+  # 环境相关配置（地址 / 账号 / 口令 / 密钥）一律由环境变量注入，本文件不留任何默认值。
+  # 取值清单与说明见项目根目录 .env.example；本地开发把 .env.example 复制成 .env 即可。
+  # 两种启动方式都能读到：IDEA 里工作目录是模块根目录（走 ../.env），
+  # 在项目根目录跑 fat-jar 时走 ./.env。
+  config:
+    import: optional:file:../.env[.properties],optional:file:.env[.properties]
   application:
     name: fitness-community
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
-    url: jdbc:mysql://${DB_HOST:192.168.150.105}:${DB_PORT:3306}/yd_community?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
-    username: ${DB_USER:root}
-    password: ${DB_PASS:123456}
+    url: jdbc:mysql://${DB_HOST}:${DB_PORT}/yd_community?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: ${DB_USER}
+    password: ${DB_PASS}
   data:
     redis:
-      host: ${REDIS_HOST:192.168.150.105}
-      port: ${REDIS_PORT:6379}
+      host: ${REDIS_HOST}
+      port: ${REDIS_PORT}
   rabbitmq:
-    host: ${MQ_HOST:192.168.150.105}
-    port: ${MQ_PORT:5672}
-    username: ${MQ_USER:fitness}
-    password: ${MQ_PASS:fitness123}
+    host: ${MQ_HOST}
+    port: ${MQ_PORT}
+    username: ${MQ_USER}
+    password: ${MQ_PASS}
   # Kafka：只作为<b>生产者</b>，而且只发一种事件（post_view）到 behavior 那条 topic。
   # ★不新开 topic、不在这里配 consumer：浏览明细的落库由 fitness-behavior 的消费者负责，
   #   计数本身走 Redis，Kafka 在这里只承担"留原始数据、可重算"这一件事。
   kafka:
-    bootstrap-servers: ${KAFKA_ADDR:192.168.150.105:9092}
+    bootstrap-servers: ${KAFKA_ADDR}
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
   cloud:
     nacos:
       discovery:
-        server-addr: ${NACOS_ADDR:192.168.150.105:8848}
+        server-addr: ${NACOS_ADDR}
 
 mybatis-plus:
   configuration:

@@ -1,21 +1,27 @@
 # 文件服务配置（图片上传 + 本地磁盘静态读取）
-# 中间件全在测试 VM（192.168.150.105）上跑，所以 ${} 默认值就是 VM 的地址；
-# 换环境给进程设环境变量（DB_HOST / NACOS_ADDR / FILE_UPLOAD_ROOT），不要改默认值。
+# 中间件地址、账号、口令与密钥全部由环境变量注入，本文件不留任何默认值。
+# 变量清单见项目根目录 .env.example；本地开发复制成 .env 即可，.env 不入库。
 server:
   port: 8108
 
 spring:
+  # 环境相关配置（地址 / 账号 / 口令 / 密钥）一律由环境变量注入，本文件不留任何默认值。
+  # 取值清单与说明见项目根目录 .env.example；本地开发把 .env.example 复制成 .env 即可。
+  # 两种启动方式都能读到：IDEA 里工作目录是模块根目录（走 ../.env），
+  # 在项目根目录跑 fat-jar 时走 ./.env。
+  config:
+    import: optional:file:../.env[.properties],optional:file:.env[.properties]
   application:
     name: fitness-file
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
-    url: jdbc:mysql://${DB_HOST:192.168.150.105}:${DB_PORT:3306}/yd_file?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
-    username: ${DB_USER:root}
-    password: ${DB_PASS:123456}
+    url: jdbc:mysql://${DB_HOST}:${DB_PORT}/yd_file?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: ${DB_USER}
+    password: ${DB_PASS}
   cloud:
     nacos:
       discovery:
-        server-addr: ${NACOS_ADDR:192.168.150.105:8848}
+        server-addr: ${NACOS_ADDR}
   # multipart 上限：容器层必须 ≥ 业务层的 2MB
   # ★只有业务层判断的话，Spring 会先把整个请求体读完（大文件撑内存/磁盘）；
   #   只有容器层的话，超限抛 MaxUploadSizeExceededException，用户看到的是"系统繁忙"
@@ -41,7 +47,7 @@ mybatis-plus:
 # 管理端 JWT 验签密钥：必须与 fitness-admin-server 的 admin-jwt.secret 完全一致
 # ★只用于验签，不签发；文件服务不查 admin 表，验签通过即认可管理员身份
 admin-jwt:
-  secret: ${ADMIN_JWT_SECRET:yuedong-admin-jwt-secret-2026-change-me-32bytes}
+  secret: ${ADMIN_JWT_SECRET}
 
 logging:
   # 同时写文件：上传失败（磁盘满/权限/DB 异常）需要完整堆栈，控制台滚过去就找不回来
