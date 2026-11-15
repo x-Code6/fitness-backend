@@ -1,4 +1,4 @@
-package com.yuedong.adminserver.service;
+package com.yuedong.adminserver.converter;
 
 import com.yuedong.order.api.dto.EntitlementAdminDTO;
 import com.yuedong.order.api.dto.ReservationAdminDTO;

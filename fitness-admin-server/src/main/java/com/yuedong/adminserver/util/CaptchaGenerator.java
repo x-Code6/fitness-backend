@@ -1,5 +1,7 @@
 package com.yuedong.adminserver.util;
 
+import com.yuedong.adminserver.model.vo.CaptchaResultVO;
+
 import javax.imageio.ImageIO;
 import java.awt.BasicStroke;
 import java.awt.Color;
@@ -13,7 +15,7 @@ import java.util.Base64;
  * 图形验证码生成器（零依赖：Graphics2D 手绘 + Base64 PNG）。
  *
  * <p>防刷设计：4 位字符（剔除易混淆的 0/O/1/I），干扰线 + 随机颜色，
- * Redis 一次一用由 Controller 层负责。</p>
+ * Redis 一次一用由业务层负责。</p>
  */
 public class CaptchaGenerator {
 
@@ -21,12 +23,8 @@ public class CaptchaGenerator {
     private static final String CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
     private static final SecureRandom RANDOM = new SecureRandom();
 
-    /** 验证码生成结果：code 存 Redis，imageBase64 返回给前端 */
-    public record CaptchaResult(String code, String imageBase64) {
-    }
-
     /** 生成 4 位验证码图片（96x36） */
-    public static CaptchaResult generate() {
+    public static CaptchaResultVO generate() {
         StringBuilder code = new StringBuilder();
         for (int i = 0; i < 4; i++) {
             code.append(CHARS.charAt(RANDOM.nextInt(CHARS.length())));
@@ -63,7 +61,7 @@ public class CaptchaGenerator {
             ImageIO.write(image, "png", out);
             String base64 = "data:image/png;base64,"
                     + Base64.getEncoder().encodeToString(out.toByteArray());
-            return new CaptchaResult(code.toString(), base64);
+            return new CaptchaResultVO(code.toString(), base64);
         } catch (Exception e) {
             throw new IllegalStateException("验证码图片生成失败", e);
         }

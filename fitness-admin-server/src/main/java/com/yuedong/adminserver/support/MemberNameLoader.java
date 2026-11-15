@@ -1,4 +1,4 @@
-package com.yuedong.adminserver.service;
+package com.yuedong.adminserver.support;
 
 import com.yuedong.common.result.Result;
 import com.yuedong.user.api.client.UserClient;

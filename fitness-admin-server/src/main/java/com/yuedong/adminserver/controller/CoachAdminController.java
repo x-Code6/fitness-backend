@@ -2,6 +2,7 @@ package com.yuedong.adminserver.controller;
 
 import com.yuedong.adminserver.annotation.OperateLog;
 import com.yuedong.common.model.PageDTO;
+import com.yuedong.common.result.ErrorCode;
 import com.yuedong.common.result.Result;
 import com.yuedong.course.api.client.CourseAdminClient;
 import com.yuedong.course.api.dto.CoachAdminDTO;
@@ -76,7 +77,7 @@ public class CoachAdminController {
     public Result<Void> delete(@RequestParam Long id) {
         Boolean busy = orderClient.coachHasFuture(id).getData();
         if (Boolean.TRUE.equals(busy)) {
-            return Result.fail(com.yuedong.common.result.ErrorCode.PARAM_ERROR,
+            return Result.fail(ErrorCode.PARAM_ERROR,
                     "该教练还有未开始的预约，请先处理这些时段再删除");
         }
         return courseClient.coachDelete(id);
